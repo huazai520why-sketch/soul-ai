@@ -1,0 +1,57 @@
+# ===== Soul 项目 .gitignore =====
+# 排除运行时数据、日志、备份、敏感文件；只保留源码/文档/配置/UI映射真值
+# 注意：git 不支持行尾注释，规则行严禁带 # 注释
+
+# ---- 运行时数据 ----
+*.db
+*.db-wal
+*.db-shm
+*.log
+*.bak*
+*.tmp
+*.pid
+*.lock
+.*.lock
+.soul_round_start*
+.winshot_hwnd*
+.soul_focus.json
+
+# ---- 其他项目的基础设施凭据/状态（非 Soul 代码） ----
+newhost_creds*
+remote_hub_tokenstore.ps1
+
+# ---- Python ----
+__pycache__/
+*.pyc
+
+# ---- 大目录 / 临时 / 素材 ----
+logs/
+shots/
+photos/
+photos_inbox/
+_imgs/
+navshots/
+_ocrmodels/
+_dbsync/
+_dbsync612/
+tmp/
+_tmp/
+_preview/
+
+# ---- 运行痕迹（_uimap 子目录，保留顶层坐标真值） ----
+_uimap/daemon/
+_uimap/demo/
+_uimap/gestures/
+
+# ---- 敏感 / 个人 ----
+.workbuddy/
+_soulweb/profile/
+soul_notes.json
+soul_notes.1.json
+
+# ---- 大型/外部二进制 ----
+*.apk
+*.exe
+*.pcap
+*.zip
+*.msi

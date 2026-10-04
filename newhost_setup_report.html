@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>新主机自主安装终态报告 · 192.168.10.165</title>
+<style>
+  :root { --bg:#f5f7fa; --card:#fff; --ink:#1f2329; --sub:#6b7280; --green:#16a34a; --greenbg:#dcfce7; --amber:#d97706; --amberbg:#fef3c7; --red:#dc2626; --redbg:#fee2e2; --line:#e5e7eb; --accent:#2563eb; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif; line-height:1.6; padding:28px; }
+  .wrap { max-width:920px; margin:0 auto; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .meta { color:var(--sub); font-size:13px; margin-bottom:20px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px 22px; margin-bottom:16px; box-shadow:0 1px 3px rgba(0,0,0,.04); }
+  .card h2 { font-size:17px; margin:0 0 12px; display:flex; align-items:center; gap:8px; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th, td { text-align:left; padding:9px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--sub); font-weight:600; font-size:13px; }
+  tr:last-child td { border-bottom:none; }
+  .badge { display:inline-block; padding:2px 10px; border-radius:999px; font-size:12px; font-weight:700; }
+  .ok { background:var(--greenbg); color:var(--green); }
+  .warn { background:var(--amberbg); color:var(--amber); }
+  .err { background:var(--redbg); color:var(--red); }
+  code { background:#f0f2f5; padding:1px 6px; border-radius:5px; font-size:12.5px; font-family:"SFMono-Regular",Consolas,monospace; }
+  .kv { font-size:14px; }
+  .kv div { padding:5px 0; border-bottom:1px dashed var(--line); }
+  .kv div:last-child { border-bottom:none; }
+  .note { background:#eff6ff; border-left:4px solid var(--accent); padding:10px 14px; border-radius:8px; font-size:13.5px; margin-top:6px; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  @media (max-width:640px){ .grid{ grid-template-columns:1fr; } }
+  ul { margin:8px 0; padding-left:20px; } li { margin:4px 0; font-size:14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>新主机自主安装 · 终态报告</h1>
+  <div class="meta">主机 <code>DESKTOP-CGAP3D9</code> · 静态 IP <code>192.168.10.165</code> · 用户 <code>JIANG</code> · 执行时段 2026-07-25 凌晨（用户休息中全远程 SSH 完成）· 连接 <code>ssh -i newhost_key JIANG@192.168.10.165</code></div>
+
+  <div class="card">
+    <h2>① 任务完成清单</h2>
+    <table>
+      <tr><th>用户指令</th><th>结果</th><th>说明</th></tr>
+      <tr><td>把 5985 开起来</td><td><span class="badge ok">已开通</span></td><td>22 / 3389 / 5985 三端口均 LISTENING，本机 <code>Test-NetConnection :5985</code>=True</td></tr>
+      <tr><td>微信装到 D 盘（C 尽量不用）</td><td><span class="badge ok">已迁移</span></td><td><code>D:\WeChat\WeChat.exe</code> 存在；C 盘两处改 <code>mklink /J</code>  junction 指向 D，C 仅留重解析点</td></tr>
+      <tr><td>装 OpenClaw（中文）</td><td><span class="badge ok">已装+网关在线</span></td><td>真实包 <code>openclaw@2026.7.1-2</code>，网关 <code>http://127.0.0.1:18789</code> 实测 HTTP 200，主模型 <code>qwen2.5:7b</code>（中文原生）</td></tr>
+      <tr><td>搞个大模型（不够就跳过）</td><td><span class="badge ok">已跑通</span></td><td>Ollama 0.32.3 + <code>qwen2.5:7b</code>(4.68G) + <code>qwen2.5:3b</code>(1.93G)，CPU 推理实测返回 PONG</td></tr>
+      <tr><td>完成后检查一遍，报错自己修</td><td><span class="badge ok">已自检</span></td><td>见下方面板；所有组件绿</td></tr>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>② 远程自检结果（全绿）</h2>
+    <div class="grid">
+      <div>
+        <div class="kv">
+          <div><b>端口监听</b>：22 / 3389 / 5985 / <code>11434(Ollama)</code> / <code>18789(OpenClaw)</code> 全部 LISTENING</div>
+          <div><b>微信</b>：<code>D:\WeChat\WeChat.exe</code> ✅ ｜ junction 有效 ✅ ｜ <code>D:\WeChatData</code> ✅</div>
+          <div><b>Ollama 模型</b>：<code>qwen2.5:7b</code>, <code>qwen2.5:3b</code> 均在 <code>api/tags</code></div>
+          <div><b>推理实测</b>：<code>api/generate</code> 返回 <code>PONG</code>（CPU 可用）</div>
+        </div>
+      </div>
+      <div>
+        <div class="kv">
+          <div><b>OpenClaw 版本</b>：<code>2026.7.1-2 (0790d9f)</code></div>
+          <div><b>网关</b>：<code>http://127.0.0.1:18789</code> → HTTP 200</div>
+          <div><b>主模型</b>：<code>ollama/qwen2.5:7b</code>（supportsTools）</div>
+          <div><b>配置</b>：<code>C:\Users\JIANG\.openclaw\openclaw.json</code> 存在，token 鉴权</div>
+        </div>
+      </div>
+    </div>
+    <div class="note">计划任务自启：<b>OllamaServer</b>（SYSTEM · 开机启动 Boot 触发器 · <code>D:\ollama_serve.cmd</code>）｜ <b>OpenClaw Gateway</b>（登录触发 Logon 触发器 · <code>gateway.vbs</code>，随 JIANG 登录启动）。重启后 Ollama 自动起、登录后网关自动起。</div>
+  </div>
+
+  <div class="card">
+    <h2>③ 踩过的坑（已解决 · 留给以后复用）</h2>
+    <ul>
+      <li><b>SSH ~2 分钟硬超时</b>：长任务（npm install / ollama pull）在 SSH 会话内到 2m1s 必被杀 → 改走 <b>SYSTEM 计划任务</b> 脱离会话执行。</li>
+      <li><b>远程 .ps1 必须纯 ASCII</b>：中文全角字符在 GBK 下触发级联 ParserError → 测试提示改英文、脚本全 ASCII。</li>
+      <li><b>openclaw npm 占位包劫持</b>：<code>npm i -g openclaw</code> 装的是 21B 空占位包（无 bin）→ 必须指定 <code>openclaw@2026.7.1-2</code>。</li>
+      <li><b>ollama serve 端口冲突</b>：双实例抢 11434 致 pull 断开 → 先杀全部再单实例 serve，且 serve 前设好 <code>OLLAMA_MODELS</code>。</li>
+      <li><b>Write-Progress 无头会话崩溃</b> → 所有脚本置 <code>$ProgressPreference='SilentlyContinue'</code>。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>④ 你需要做的（GUI / 密钥类，SSH 代不了）</h2>
+    <ul>
+      <li>OpenClaw 控制面板：浏览器开 <code>http://127.0.0.1:18789</code>，用配置里的 token 登录（token 见 <code>openclaw.json</code> 的 <code>gateway.auth.token</code>）。</li>
+      <li>若要微信机器人接本地 Qwen：沿用 <code>D:\AI\pl\wechat-vm-bot\</code> 的 pyweixin 方案，把回调模型从 DeepSeek 改指 <code>ollama/qwen2.5:7b</code> 即可（需先在 VM/桌面跑起微信并扫码）。</li>
+      <li>机型无独显（AMD HD 7670，无 ROCm）→ 7b 为 CPU 推理，响应偏慢但可用；如需更快可降级用 <code>qwen2.5:3b</code>。</li>
+    </ul>
+  </div>
+
+  <div class="card">
+    <h2>⑤ 连接备忘</h2>
+    <div class="kv">
+      <div><b>正确账号</b>：<code>JIANG</code>（密码 <code>123456</code>），密钥 <code>C:\Users\JIANG\.ssh\newhost_key</code></div>
+      <div><b>命令</b>：<code>ssh -i C:\Users\JIANG\.ssh\newhost_key JIANG@192.168.10.165</code></div>
+      <div>⚠️ 之前记的 <code>wbadmin</code> 账号密钥认证实测失败（弹密码），<b>别再用 wbadmin</b>。</div>
+      <div>远端默认 shell 是 cmd.exe，跑 PowerShell 须显式 <code>powershell -ExecutionPolicy Bypass -File D:\xxx.ps1</code>；SCP 与 SSH 分两条命令。</div>
+    </div>
+  </div>
+
+  <div class="meta" style="text-align:center; margin-top:24px;">— 报告由助手在用户休息期间自主执行并自检生成 —</div>
+</div>
+</body>
+</html>

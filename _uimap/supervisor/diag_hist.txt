@@ -1,0 +1,29 @@
+IMDB = E:\soul\im_data.db
+ME   = 96691646
+VMI  = 0
+tables = ['android_metadata', 'chatmsg', 'sqlite_sequence', 'groupmsg', 'session', 'anonymitymsg', 'room_master_table']
+session cols = ['id', 'sessionId', 'chatType', 'userType', 'toUserId', 'unReadCount', 'timestamp', 'lastMsgText', 'msgStatus', 'status', 'dbStatus', 'extInfo']
+chatmsg cols = ['id', 'msgId', 'sessionId', 'senderId', 'receiverId', 'localTime', 'serverTime', 'msgType', 'msgStatus', 'msgReceiveStatus', 'msgContent', 'text', 'ack', 'snapChat', 'extString', 'msgSource', 'extMap', 'showType', 'quoteMsgId', 'dbStatus', 'date']
+
+sessions = 15
+chatmsg total = 55
+
+  sid=96691646501495211        to=501495211    unread=0   msgs=1
+  sid=96691646-10011           to=-10011       unread=2   msgs=0
+  sid=96691646380221665        to=380221665    unread=0   msgs=1
+  sid=96691646152732740        to=152732740    unread=0   msgs=2
+  sid=96691646501745348        to=501745348    unread=0   msgs=2
+  sid=96691646474690451        to=474690451    unread=0   msgs=2
+  sid=96691646499522589        to=499522589    unread=1   msgs=1
+  sid=9669164678067626         to=78067626     unread=2   msgs=2
+  sid=96691646408358424        to=408358424    unread=0   msgs=1
+  sid=96691646157747589        to=157747589    unread=0   msgs=1
+  sid=96691646359737367        to=359737367    unread=0   msgs=1
+  sid=96691646345957780        to=345957780    unread=0   msgs=1
+  sid=96691646448619548        to=448619548    unread=0   msgs=1
+  sid=96691646465469371        to=465469371    unread=0   msgs=1
+  sid=96691646402930561        to=402930561    unread=0   msgs=1
+
+样本会话 sid=96691646152732740 共 2 条，最近 15 条：
+   [1790959884193] 她 text='可以啊' content='{"text":"","type":0,"mark":-1}'
+   [1790994210028] 我 text='None' content='{"text":"{\\"tagAuthGuide\\":{\\"activityId\\":-1,\\"content\\":\\"'

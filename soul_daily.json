@@ -1,0 +1,36 @@
+{
+  "date": "2026-09-28",
+  "generated_at": "2026-09-28 17:02",
+  "weather": {
+    "text": "重庆綦江 雷阵雨 24.8~29.9℃ 有雨概率98%",
+    "tomorrow": "｜明天雷阵雨 22.8~28.6℃",
+    "raw": [
+      {
+        "date": "2026-09-28",
+        "code": 95,
+        "tmax": 29.9,
+        "tmin": 24.8,
+        "rain": 98
+      },
+      {
+        "date": "2026-09-29",
+        "code": 95,
+        "tmax": 28.6,
+        "tmin": 22.8,
+        "rain": 92
+      },
+      {
+        "date": "2026-09-30",
+        "code": 95,
+        "tmax": 27.8,
+        "tmin": 23.4,
+        "rain": 94
+      }
+    ],
+    "source": "open-meteo"
+  },
+  "topics": [],
+  "dropped": 0,
+  "errors": [],
+  "with_hot": false
+}

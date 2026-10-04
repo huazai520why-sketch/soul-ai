@@ -1,0 +1,158 @@
+[
+ {
+  "hwnd": "0001010E",
+  "cls": "Shell_TrayWnd",
+  "title": "",
+  "minimized": false,
+  "rect": [
+   0,
+   1040,
+   1920,
+   1080
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "05A60626",
+  "cls": "Qt5156QWindowIcon",
+  "title": "17320432910",
+  "minimized": false,
+  "rect": [
+   843,
+   3,
+   1384,
+   995
+  ],
+  "foreground": true
+ },
+ {
+  "hwnd": "003C039A",
+  "cls": "Qt5156QWindowIcon",
+  "title": "17265041951",
+  "minimized": false,
+  "rect": [
+   1379,
+   3,
+   1920,
+   994
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "000304B4",
+  "cls": "Qt5156QWindowToolSaveBits",
+  "title": "MuMu模拟器",
+  "minimized": false,
+  "rect": [
+   534,
+   250,
+   1394,
+   830
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "00140026",
+  "cls": "ApplicationFrameWindow",
+  "title": "",
+  "minimized": false,
+  "rect": [
+   0,
+   0,
+   1582,
+   702
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "0001051E",
+  "cls": "WindowsForms10.Window.8.app.0.282af8c_r8_ad1",
+  "title": "AMD:CCC-AEMCapturingWindow",
+  "minimized": false,
+  "rect": [
+   -10000,
+   -10000,
+   -9984,
+   -9961
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "000101D8",
+  "cls": "DummyDWMListenerWindow",
+  "title": "",
+  "minimized": false,
+  "rect": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "000101D0",
+  "cls": "EdgeUiInputTopWndClass",
+  "title": "",
+  "minimized": false,
+  "rect": [
+   15,
+   0,
+   1920,
+   4
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "000101B0",
+  "cls": "DummyDWMListenerWindow",
+  "title": "",
+  "minimized": false,
+  "rect": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "000101AE",
+  "cls": "DummyDWMListenerWindow",
+  "title": "",
+  "minimized": false,
+  "rect": [
+   0,
+   0,
+   0,
+   0
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "00020028",
+  "cls": "Windows.UI.Core.CoreWindow",
+  "title": "Microsoft Text Input Application",
+  "minimized": false,
+  "rect": [
+   0,
+   0,
+   1920,
+   1080
+  ],
+  "foreground": false
+ },
+ {
+  "hwnd": "0001017E",
+  "cls": "Progman",
+  "title": "Program Manager",
+  "minimized": false,
+  "rect": [
+   0,
+   0,
+   1920,
+   1080
+  ],
+  "foreground": false
+ }
+]

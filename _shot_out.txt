@@ -1,0 +1,2 @@
+﻿窗口=enum(548x1004) hwnd=0xE102E4 → OK 548x1004 PrintWindow=1
+输出: E:\soul\v0live.png (263804 字节)

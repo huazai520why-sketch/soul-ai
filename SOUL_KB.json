@@ -1,0 +1,421 @@
+{
+  "meta": {
+    "name": "Soul App 知识库",
+    "app": "Soul 6.12.0",
+    "android": "Android 15",
+    "emulator": "MuMu Player 15.0",
+    "resolution": [
+      900,
+      1600
+    ],
+    "shot_size": [
+      533,
+      948
+    ],
+    "shot_scale": 1.688,
+    "source": "2026-09-28~10-03 副机 jian 实测（OCR+activity+截图）",
+    "display_note": "display 号动态，实测见过 2/4/5，必须用 soul.display() 动态查"
+  },
+  "activities": {
+    "main": "cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity",
+    "conversation": "cn.soulapp.android/cn.soulapp.android.component.chat.ConversationActivity",
+    "crony": "cn.soulapp.android/cn.soulapp.android.component.chat.CronyActivity",
+    "user_home": "cn.soulapp.android/cn.soulapp.android.component.home.user.UserHomeActivity",
+    "publish": "cn.soulapp.android/cn.soulapp.android.component.publish.publishchain.ui.activity.PublishChainActivity",
+    "miniapp": "cn.soulapp.android.miniprogram.core.activity.SLMiniAppMainActivity",
+    "rn_container": "cn.soul.android.soul_rn_sdk.multiengine.RnContainerActivity",
+    "foreground_rule": "判前台用 activity.startswith('cn.soul')，不能用 'soulapp' in activity"
+  },
+  "bottom_nav": {
+    "星球": [
+      103,
+      1585
+    ],
+    "广场": [
+      287,
+      1585
+    ],
+    "发布": [
+      451,
+      1532
+    ],
+    "聊天": [
+      615,
+      1585
+    ],
+    "自己": [
+      802,
+      1585
+    ],
+    "selected_rule": "G-R > 35 and B-R > 35（选中青色≈(140,232,230)，未选中灰≈(167,167,167)）",
+    "click_y": 1585
+  },
+  "pages": {
+    "聊天·会话列表": {
+      "activity": "main",
+      "enter": "底部『聊天』tab（默认页）",
+      "elements": {
+        "通讯录": [
+          382,
+          89
+        ],
+        "聊天": [
+          518,
+          89
+        ],
+        "搜索框": [
+          202,
+          188
+        ]
+      },
+      "note": "会话行 昵称+右侧时间+末条，行距≈153px"
+    },
+    "聊天·通讯录": {
+      "activity": "main",
+      "enter": "会话行右滑",
+      "elements": {
+        "密友": [
+          72,
+          301
+        ],
+        "备注": [
+          73,
+          421
+        ],
+        "关注我": [
+          89,
+          541
+        ],
+        "官方号": [
+          89,
+          661
+        ],
+        "群组": [
+          72,
+          781
+        ],
+        "我的关注": [
+          123,
+          905
+        ],
+        "全部": [
+          731,
+          905
+        ],
+        "密友tab": [
+          834,
+          905
+        ]
+      }
+    },
+    "会话页": {
+      "activity": "conversation",
+      "enter": "点聊天列表的会话行",
+      "elements": {
+        "返回箭头": [
+          50,
+          105
+        ],
+        "昵称标题": [
+          null,
+          103
+        ],
+        "关注": [
+          771,
+          105
+        ],
+        "查看主页": [
+          835,
+          342
+        ],
+        "匹配度": [
+          312,
+          386
+        ],
+        "输入框": [
+          451,
+          1532
+        ]
+      },
+      "note": "返回用右滑，别用 keyevent 4"
+    },
+    "资料页": {
+      "activity": "user_home",
+      "enter": "会话页点『查看主页』或广场feed左滑",
+      "elements": {
+        "分享": [
+          759,
+          100
+        ],
+        "IP属地": [
+          798,
+          151
+        ],
+        "匹配度": [
+          450,
+          437
+        ],
+        "天数瞬间": [
+          448,
+          563
+        ],
+        "私聊": [
+          620,
+          1553
+        ],
+        "邀请发瞬间": [
+          447,
+          1456
+        ]
+      }
+    },
+    "搜索页": {
+      "activity": "rn_container",
+      "enter": "点聊天列表搜索框",
+      "elements": {
+        "取消": [
+          848,
+          189
+        ],
+        "搜索框": [
+          202,
+          189
+        ]
+      },
+      "note": "结果行昵称不可点，只有右侧『私聊』可点"
+    },
+    "星球页": {
+      "activity": "main",
+      "enter": "底部『星球』tab",
+      "elements": {
+        "灵魂测试": [
+          141,
+          94
+        ],
+        "筛选": [
+          829,
+          93
+        ],
+        "灵魂匹配": [
+          126,
+          1327
+        ],
+        "语音匹配": [
+          556,
+          1325
+        ],
+        "灵魂匹配剩余": [
+          124,
+          1370
+        ],
+        "语音匹配剩余": [
+          547,
+          1369
+        ],
+        "在线人数": [
+          453,
+          1114
+        ]
+      },
+      "note": "点灵魂匹配会扣次数；白天不点"
+    },
+    "星球筛选弹层": {
+      "activity": "main",
+      "enter": "星球页点『筛选』",
+      "elements": {
+        "蒙面": [
+          117,
+          1147
+        ],
+        "星球": [
+          117,
+          1273
+        ],
+        "匹配": [
+          117,
+          1402
+        ],
+        "确定": [
+          451,
+          1522
+        ]
+      }
+    },
+    "广场页": {
+      "activity": "main",
+      "enter": "底部『广场』tab",
+      "elements": {
+        "推荐": [
+          449,
+          94
+        ],
+        "关注": [
+          351,
+          92
+        ],
+        "同城": [
+          553,
+          93
+        ]
+      },
+      "note": "动态流会插广告卡片"
+    },
+    "自己页": {
+      "activity": "main",
+      "enter": "底部『自己』tab",
+      "elements": {
+        "加好友": [
+          724,
+          96
+        ],
+        "设置": [
+          835,
+          96
+        ],
+        "IP属地": [
+          801,
+          159
+        ],
+        "超级星": [
+          124,
+          697
+        ],
+        "立即提升": [
+          450,
+          1008
+        ]
+      }
+    },
+    "发布弹层": {
+      "activity": "publish",
+      "enter": "底部中间凸起『发布』按钮",
+      "elements": {
+        "发布": [
+          828,
+          93
+        ],
+        "加话题": [
+          114,
+          1377
+        ],
+        "你在哪里": [
+          111,
+          1445
+        ],
+        "广场可见": [
+          800,
+          1445
+        ],
+        "@Ta": [
+          249,
+          1446
+        ],
+        "发文字": [
+          256,
+          1535
+        ],
+        "相册": [
+          386,
+          1537
+        ],
+        "拍照片": [
+          512,
+          1537
+        ],
+        "拍视频": [
+          653,
+          1537
+        ]
+      }
+    },
+    "小程序页": {
+      "activity": "miniapp",
+      "enter": "星球页点『灵魂测试』等",
+      "close": [
+        855,
+        94
+      ],
+      "note": "关闭=右上角圆点；左上角箭头关不掉；兜底 keyevent 4"
+    },
+    "奇遇铃卡片": {
+      "activity": "overlay(覆盖在聊天列表上)",
+      "elements": {
+        "标题": [
+          124,
+          144
+        ],
+        "同城奇遇": [
+          248,
+          147
+        ],
+        "关闭x": [
+          640,
+          145
+        ],
+        "昵称": [
+          360,
+          298
+        ],
+        "立即私聊": [
+          360,
+          541
+        ]
+      },
+      "note": "最高优先级，弹了就点『立即私聊』，绝不主动关；会自动消失"
+    }
+  },
+  "gestures": {
+    "聊天列表_上滑": "滚动",
+    "聊天列表_下滑": "回顶",
+    "会话行_右滑": "→通讯录页",
+    "会话行_左滑": "无反应",
+    "会话行_长按": "→密友页 CronyActivity",
+    "广场feed_左滑": "→资料页 UserHomeActivity",
+    "广场feed_上滑": "滚动",
+    "广场feed_下滑": "无变化",
+    "星球网格_上滑下滑": "滚动",
+    "会话页_右滑": "→返回聊天列表",
+    "会话页_上滑下滑": "无变化",
+    "小程序_点右上角圆点": "关闭"
+  },
+  "commands": {
+    "launch": "mumu-cli control -v 0 app launch --package cn.soulapp.android",
+    "close": "mumu-cli control -v 0 app close --package cn.soulapp.android",
+    "read_ui": "python E:\\soul\\soul_read.py",
+    "read_pending": "python E:\\soul\\soul_im.py pending",
+    "send": "python E:\\soul\\soul_reply.py \"昵称\" \"内容\"",
+    "tap": "mumu-cli sh -v 0 -c \"input -d <display> tap X Y\"",
+    "swipe": "mumu-cli sh -v 0 -c \"input -d <display> swipe X1 Y1 X2 Y2 300\"",
+    "back": "mumu-cli sh -v 0 -c \"input keyevent 4\"",
+    "input_text": "mumu-cli control -v 0 tool cmd -c input_text -t \"中文\"",
+    "screenshot": "python E:\\soul\\winshot.py E:\\soul\\wshot.png"
+  },
+  "multivm": {
+    "实例0": {
+      "name": "17320432910",
+      "render_wnd": "000304B8",
+      "adb_port": 16384,
+      "display": 4
+    },
+    "实例1": {
+      "name": "17265041951",
+      "render_wnd": "041A063C",
+      "adb_port": 16416,
+      "display": 2
+    },
+    "switch": "-v <index> / 环境变量 SOUL_VMINDEX=<n>",
+    "clone": "mumu-cli clone --vmindex <n> --number <k>"
+  },
+  "safety": [
+    "必须带 -d <display>，否则点到桌面",
+    "截图必须走窗口 winshot，screencap 拿不到 Soul",
+    "会话页根页面不要用 keyevent 4（会退出App），用右滑返回",
+    "发消息前必须确认在聊天列表页，否则可能误发通话邀请卡",
+    "判待回用 pending()，不用 session.unreadCount",
+    "白天08:00~19:00只回复，不点匹配/奇遇铃",
+    "奇遇铃不主动关",
+    "昵称含emoji要传去emoji子串",
+    "闲置>36h的会话先放宽扫描深度再找",
+    "不要用 PsExec .cmd（弹黑框），用 pythonw 跑 .py"
+  ]
+}

@@ -1,0 +1,41 @@
+{
+ "tag": "P8_search",
+ "png_size": 15392,
+ "activity": "mCurrentFocus=Window{f66f9f6 u0 cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity}",
+ "display": "5",
+ "dev_size": [
+  900,
+  1600
+ ],
+ "shot_size": [
+  533,
+  948
+ ],
+ "items": [
+  {
+   "t": "聊天",
+   "x": 519,
+   "y": 90
+  },
+  {
+   "t": "通讯录",
+   "x": 382,
+   "y": 91
+  },
+  {
+   "t": "Q搜索昵称或聊天记录",
+   "x": 202,
+   "y": 189
+  },
+  {
+   "t": "取消",
+   "x": 848,
+   "y": 189
+  },
+  {
+   "t": "再遇见1>",
+   "x": 746,
+   "y": 1395
+  }
+ ]
+}

@@ -1,0 +1,9 @@
+[ 9:40:23.48] locate shared host path 
+[ 9:40:23.53] ls vms top 
+系统找不到指定的文件。
+[ 9:40:23.55] retry screencap -d 2 
+RC=1
+[ 9:40:23.82] retry screencap --display 2 
+RC=1
+[ 9:40:24.09] ls shared soul2 
+[ 9:40:24.25] === DONE === 

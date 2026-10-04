@@ -1,0 +1,234 @@
+=== python procs === 
+
+映像名称                       PID 会话名              会话#       内存使用 
+========================= ======== ================ =========== ============
+python.exe                   11576 Console                    1      3,192 K
+python.exe                    3584 Console                    1    103,852 K
+=== gestures files === 
+G01_chat_swipeup.json
+G01_chat_swipeup_after.png
+G01_chat_swipeup_before.png
+G02_chat_swipedown.json
+G02_chat_swipedown_after.png
+G02_chat_swipedown_before.png
+G03_chat_leftswipe_row.json
+G03_chat_leftswipe_row_after.png
+G03_chat_leftswipe_row_before.png
+G04_chat_rightswipe_row.json
+G04_chat_rightswipe_row_after.png
+G04_chat_rightswipe_row_before.png
+G05_chat_longpress_row.json
+G05_chat_longpress_row_after.png
+G05_chat_longpress_row_before.png
+G06_square_swipeup.json
+G06_square_swipeup_after.png
+G06_square_swipeup_before.png
+G07_square_swipeup2.json
+G07_square_swipeup2_after.png
+G07_square_swipeup2_before.png
+G08_square_swipedown.json
+G08_square_swipedown_after.png
+G08_square_swipedown_before.png
+G09_square_leftswipe.json
+G09_square_leftswipe_after.png
+G09_square_leftswipe_before.png
+G10_square_rightswipe_before.png
+gestures.log
+=== log tail === 
+display = 5
+dev_size = (900, 1600)
+
+========== 阶段A：小程序右上角圆点关闭测试 ==========
+  打开后 act = cn.soulapp.android/cn.soulapp.android.miniprogram.core.activity.SLMiniAppMainActivity
+  试圆点 (855,94) ...
+    → act = cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  圆点关闭结果： 成功
+
+========== 阶段B：聊天列表手势 ==========
+
+--- [G01] chat_swipeup  (列表上滑(内容上移))  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 38 -> 42 ; 新增 23 消失 17
+    + y=560   x=255   '星河入梦S'
+    + y=562   x=398   'uemate'
+    + y=607   x=290   '人少好你还能坐着歇'
+    + y=712   x=222   '委委佗佗'
+    + y=760   x=317   '我这边还热你倒是躲对了'
+    + y=862   x=295   '（奇遇铃'
+    + y=864   x=207   '碎琉璃'
+    + y=911   x=303   '宅着也行我下班只想瘫'
+    + y=1014  x=346   '（匹配'
+    + y=1016  x=237   '可爱的小猫'
+    + y=1017  x=832   '10月1日'
+    + y=1065  x=224   '[互动消息]'
+    - y=188   x=202   'Q搜索昵称或聊天记录'
+    - y=285   x=848   '10:04'
+    - y=289   x=221   '系统通知'
+    - y=301   x=84    '00.'
+    - y=333   x=85    '通知'
+    - y=343   x=435   '你和辰的合养宠物已断聊6天，宠物将在1天.'
+    - y=441   x=235   'Soul空间站'
+    - y=498   x=380   '[活动]，这个十一你的坐标在哪儿?'
+    - y=597   x=261   '今天快乐～~S'
+    - y=597   x=397   'Pouemate'
+    - y=644   x=203   '可以啊'
+    - y=750   x=281   '风止遇你Soulmate'
+
+--- [G02] chat_swipedown  (列表下滑(回顶))  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 42 -> 38 ; 新增 18 消失 24
+    + y=188   x=202   'Q搜索昵称或聊天记录'
+    + y=285   x=848   '10:04'
+    + y=289   x=221   '系统通知'
+    + y=301   x=84    '00.'
+    + y=333   x=85    '通知'
+    + y=343   x=435   '你和辰的合养宠物已断聊6天，宠物将在1天.'
+    + y=441   x=235   'Soul空间站'
+    + y=498   x=380   '[活动]，这个十一你的坐标在哪儿?'
+    + y=597   x=261   '今天快乐～~S'
+    + y=597   x=397   'Pouemate'
+    + y=644   x=203   '可以啊'
+    + y=750   x=281   '风止遇你Soulmate'
+    - y=409   x=319   '请勿查户口..Soulmate'
+    - y=560   x=255   '星河入梦S'
+    - y=562   x=395   'uemate'
+    - y=607   x=290   '人少好你还能坐着歇'
+    - y=712   x=222   '委委佗佗'
+    - y=760   x=317   '我这边还热你倒是躲对了'
+    - y=862   x=295   '（奇遇铃'
+    - y=864   x=207   '碎琉璃'
+    - y=911   x=303   '宅着也行我下班只想瘫'
+    - y=1014  x=346   '（匹配'
+    - y=1016  x=237   '可爱的小猫'
+    - y=1017  x=832   '10月1日'
+
+--- [G03] chat_leftswipe_row  (左滑会话行 y=597)  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 38 -> 38 ; 新增 0 消失 0
+
+--- [G04] chat_rightswipe_row  (右滑会话行复位)  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 38 -> 19 ; 新增 11 消失 30
+    + y=188   x=172   'Q搜索备注、昵称'
+    + y=301   x=72    '密友'
+    + y=421   x=73    '备注'
+    + y=541   x=89    '关注我'
+    + y=541   x=848   '26'
+    + y=661   x=89    '官方号'
+    + y=781   x=72    '群组'
+    + y=905   x=123   '我的关注(0)'
+    + y=905   x=731   '全部'
+    + y=905   x=834   '密友'
+    + y=1393  x=519   'Soul'
+    - y=188   x=202   'Q搜索昵称或聊天记录'
+    - y=285   x=848   '10:04'
+    - y=289   x=221   '系统通知'
+    - y=301   x=84    '00.'
+    - y=333   x=85    '通知'
+    - y=343   x=435   '你和辰的合养宠物已断聊6天，宠物将在1天.'
+    - y=438   x=853   '昨天'
+    - y=441   x=235   'Soul空间站'
+    - y=498   x=380   '[活动]，这个十一你的坐标在哪儿?'
+    - y=597   x=261   '今天快乐～~S'
+    - y=597   x=397   'Pouemate'
+    - y=597   x=853   '昨天'
+
+--- [G05] chat_longpress_row  (长按会话行 y=301)  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.chat.CronyActivity
+  item 19 -> 5 ; 新增 2 消失 15
+    + y=827   x=450   '推荐广场可以发现更多有趣的Souler哦～'
+    + y=945   x=451   '去推荐广场'
+    - y=89    x=382   '通讯录'
+    - y=89    x=519   '聊天'
+    - y=421   x=73    '备注'
+    - y=541   x=89    '关注我'
+    - y=541   x=848   '26'
+    - y=661   x=89    '官方号'
+    - y=781   x=72    '群组'
+    - y=905   x=123   '我的关注(0)'
+    - y=905   x=731   '全部'
+    - y=1532  x=451   '发布'
+    - y=1559  x=450   '瞬间'
+    - y=1584  x=102   '星球'
+
+========== 阶段C：广场 feed 手势 ==========
+
+--- [G06] square_swipeup  (feed 上滑)  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 17 -> 37 ; 新增 22 消失 3
+    + y=147   x=244   '（同城奇遇'
+    + y=749   x=805   '15'
+    + y=860   x=185   '霖儿'
+    + y=882   x=761   '关注'
+    + y=909   x=212   '穿搭新呈'
+    + y=910   x=353   '间歇性高冷'
+    + y=963   x=457   '哎，早上起来到现在就有这么多人，我跟谁聊啊！'
+    + y=1050  x=283   '找对象广场'
+    + y=1051  x=650   '2分钟前'
+    + y=1085  x=252   '你好'
+    + y=1148  x=333   '顺其自然，平常心广场'
+    + y=1183  x=294   '因吹斯汀'
+    - y=148   x=247   '同城奇遇'
+    - y=1439  x=691   '点赞'
+    - y=1439  x=822   '评论'
+
+--- [G07] square_swipeup2  (feed 再上滑)  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 37 -> 26 ; 新增 11 消失 21
+    + y=343   x=451   '●在线'
+    + y=775   x=811   '10'
+    + y=928   x=181   '12分钟前'
+    + y=990   x=419   '现在没有图片能代表我想爬山达到顶峰的心'
+    + y=1052  x=198   'の重庆市>'
+    + y=1269  x=219   '@抖音极速版'
+    + y=1289  x=847   '广告×'
+    + y=1311  x=203   '6分钟前推荐'
+    + y=1321  x=69    '领现金'
+    + y=1370  x=339   '刷视频就能领大额红包！速来！'
+    + y=1433  x=233   '抖音极速版'
+    - y=343   x=458   '在线'
+    - y=749   x=805   '15'
+    - y=860   x=185   '霖儿'
+    - y=909   x=212   '穿搭新呈'
+    - y=910   x=353   '间歇性高冷'
+    - y=963   x=457   '哎，早上起来到现在就有这么多人，我跟谁聊啊！'
+    - y=1050  x=283   '找对象广场'
+    - y=1051  x=650   '2分钟前'
+    - y=1085  x=252   '你好'
+    - y=1148  x=333   '顺其自然，平常心广场'
+    - y=1183  x=294   '因吹斯汀'
+    - y=1247  x=303   '来个有缘人可好'
+
+--- [G08] square_swipedown  (feed 下滑)  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  item 26 -> 26 ; 新增 0 消失 0
+
+--- [G09] square_leftswipe  (feed 左滑(可能切tab))  act_before=cn.soulapp.android/cn.soulapp.android.component.startup.main.MainActivity
+  act_after =cn.soulapp.android/cn.soulapp.android.component.home.user.UserHomeActivity
+  item 26 -> 17 ; 新增 12 消失 21
+    + y=100   x=448   'Souler'
+    + y=100   x=759   '&分享'
+    + y=151   x=798   'IP属地：重庆?'
+    + y=437   x=450   '匹配度96%'
+    + y=458   x=711   '双击试试'
+    + y=563   x=448   '633天，1个瞬间'
+    + y=629   x=582   '美妆'
+    + y=811   x=140   '2025-01-09 22:39:56'
+    + y=865   x=103   'TA出生了！'
+    + y=1394  x=449   '没有更多了'
+    + y=1456  x=447   '邀请ta发瞬间》'
+    + y=1553  x=620   '私聊'
+    - y=87    x=452   '关注推芳同城'
+    - y=145   x=126   'Soui奇遇铃'
+    - y=147   x=244   '（同城奇遇'
+    - y=343   x=451   '●在线'
+    - y=653   x=451   '立即私聊'
+    - y=775   x=811   '10'
+    - y=928   x=181   '12分钟前'
+    - y=990   x=419   '现在没有图片能代表我想爬山达到顶峰的心'
+    - y=1052  x=198   'の重庆市>'
+    - y=1137  x=209   '分享'
+    - y=1269  x=219   '@抖音极速版'
+    - y=1289  x=847   '广告×'
+
+--- [G10] square_rightswipe  (feed 右滑)  act_before=cn.soulapp.android/cn.soulapp.android.component.home.user.UserHomeActivity=== END === 

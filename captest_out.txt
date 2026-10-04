@@ -1,0 +1,3 @@
+PSEXEC_OK
+Physical size: 900x1600
+CAPDONE

@@ -1,0 +1,4 @@
+窗口 00140026 抓图: OK 1582x702 PrintWindow=1 (size=3386)
+桌面 1920x1080 非黑采样 0/20132 (0%) size=6121
+OCR win_140026.png → 0 条
+OCR desk2.png → 0 条

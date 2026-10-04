@@ -1,0 +1,78 @@
+# -*- coding: utf-8 -*-
+"""一次性导入 2026-09-25 已知好友档案（跑一次即可，可重复跑=更新）"""
+import sys, io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+sys.path.insert(0, r"E:\soul")
+import soul_db as db
+
+FRIENDS = [
+ ("十月", dict(source="match", match_pct=95, planet="魅力少帅", zodiac="天秤座",
+   status="chatting", notes="县城人;中午饭店吃鱼;猜她两次都没中;她说主城好吃的更多")),
+ ("迷路的小迷糊", dict(source="guangchang", status="chatting",
+   notes="自律健身+徒步;我提过南山和开车带路;她说南山我不熟")),
+ ("请安静一点！", dict(source="match", match_pct=95, zodiac="天蝎座", status="chatting",
+   notes="签:拒绝快餐恋爱;失眠惯犯;王者上赛季88星十点后上线;加班/听歌/刷剧;我邀约出门逛她回'享受一个人的生活'——降温了别追")),
+ ("一块抹茶蛋糕", dict(source="guangchang", match_pct=96, status="chatting",
+   notes="#单身想结婚;发起交换图片(我无图,说改天拍);⚠️我曾误说'做互联网写代码'——追问工作按新口径圆")),
+ ("漩涡鸣人", dict(source="match", status="chatting",
+   notes="双马尾头像;昨晚'那对是谁'她不答;今天问她早饭未回")),
+ ("云舒星同耀", dict(source="match", match_pct=95, zodiac="白羊+双鱼", status="chatting",
+   notes="新注册;聊过创业较劲话题")),
+ ("forever", dict(source="match", match_pct=95, planet="艺术家", zodiac="白羊座",
+   tags="记录一点小情绪", status="active", notes="首搭2条未回")),
+ ("初见", dict(source="lingyu", match_pct=96, planet="务实家", zodiac="处女座",
+   tags="美食、永远在减肥、声控、独处的时候最开心", common="重庆", distance_km=0.8,
+   status="chatting", notes="稀饭+给晚饭留肚子")),
+ ("🍀", dict(source="match", match_pct=95, planet="思想家", zodiac="处女座(资料写狮子她纠正)",
+   tags="美食、追剧、居家空间、王者荣耀", common="重庆、火象星座", status="active",
+   notes="问她玩什么位置未回")),
+ ("擎荷听雨", dict(source="lingyu", match_pct=95, planet="守护天使", mbti="ISFP",
+   tags="职场打工人、吃货一枚、经常旅行、破冰小能手、温柔但有边界", common="重庆", distance_km=2,
+   status="chatting", notes="奇遇铃弹窗;聊2公里距离")),
+ ("与风对话", dict(source="match", match_pct=94, mbti="ISFJ",
+   tags="创业进行中、离异、找兴趣搭子、语音陪伴、慢热但真诚、认真关系玩家", common="火象星座",
+   status="active", notes="慢热;'不了解不知道说啥';我让她听我说站一天腿硬")),
+ ("取什么名字好呢", dict(source="match", zodiac="摩羯座", status="chatting",
+   notes="回老家'不方便';她说有空了聊;我发'有空就来烦你'")),
+ ("过去的就过去", dict(source="match", match_pct=94, planet="品质小资", zodiac="摩羯座",
+   status="chatting", notes="说不上班;我问在家干啥未回")),
+ ("大小姐的瞬间", dict(source="match", match_pct=94, planet="王侯将相", mbti="ENTJ",
+   zodiac="处女座", tags="这货没引力", status="active", notes="首搭2条未回")),
+ ("SPHINX.", dict(source="match", match_pct=95, planet="极致规划师", zodiac="双鱼座",
+   status="active", notes="首搭2条(问Sphinx名字)未回")),
+ ("老阿姨", dict(source="lingyu", match_pct=95, planet="元气才子", mbti="ENFP",
+   zodiac="双子座", tags="每年至少一次旅行、安全感缺失、偶尔搓个麻将、上班族", common="重庆",
+   distance_km=48, status="chatting", notes="奇遇铃弹窗;聊麻将没时间")),
+ ("我也不了解她", dict(source="match", match_pct=96, planet="仁爱", zodiac="双鱼座",
+   tags="脾气差没耐心暴躁易怒、无聊且无趣、喜欢脂包肌", common="重庆", status="active",
+   notes="首搭2条未回")),
+ ("好好说话", dict(source="lingyu", match_pct=96, planet="艺术家", zodiac="天蝎座",
+   tags="王者荣耀、减肥超过20斤、行走的美食攻略、已婚已育已离", common="重庆", distance_km=48,
+   status="active", notes="稍后再聊;首搭2条未回")),
+ ("卡卡西", dict(source="lingyu", match_pct=93, planet="王侯将相", mbti="ENTJ",
+   zodiac="射手座", tags="空窗三年整、网球、每周必撸铁、机车中女、想谈个INTP", common="火象星座",
+   status="active", notes="稍后再聊;首搭2条(机车)未回;⚠️她想谈INTP,MBTI话题小心,用户没测过")),
+ ("后来", dict(source="lingyu", match_pct=95, planet="仁爱", zodiac="双鱼座",
+   tags="美食、音乐、独处的时候最开心、追剧、喜欢去电影院看电影、家庭主妇", common="重庆",
+   distance_km=27, status="stopped", notes="发2条(电影/音乐)都没回,放弃")),
+ ("小叮当", dict(source="lingyu", distance_km=43, tags="离异、不找伴侣已婚勿扰",
+   status="skipped", notes="明确不找伴侣,跳过")),
+ ("小默", dict(source="lingyu", match_pct=97, planet="见习生",
+   tags="单身汪、自由工作者、一个人跑过318", status="gift",
+   notes="奇遇铃匹配;私聊需送18Soul币礼物,未聊")),
+ ("冰美式", dict(source="match", match_pct=96, planet="务实家", zodiac="天蝎座",
+   status="stopped", notes="早上首搭未回")),
+ ("澜", dict(source="match", match_pct=95, zodiac="巨蟹座", status="stopped",
+   notes="早上首搭未回;签'拒绝只聊自己',多问少说")),
+ ("遇见锦汐", dict(source="match", match_pct=93, mbti="ESFJ", status="stopped",
+   notes="早上首搭未回;社交达人却独处")),
+ ("不要说话", dict(source="match", match_pct=94, zodiac="双子座", status="stopped",
+   notes="早上首搭未回;签:已读不回/暴脾气/别查户口/免问工作年纪")),
+ ("星河", dict(source="match", match_pct=96, zodiac="双子座", status="stopped",
+   notes="沈阳人在重庆;火锅聊过未回")),
+]
+
+for name, kw in FRIENDS:
+    db.upsert(name, **kw)
+print("导入完成:", len(FRIENDS), "人")
+db.list_friends()

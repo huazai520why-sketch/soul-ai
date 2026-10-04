@@ -1,0 +1,21 @@
+chat_SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09    im_user_bean = 51
+chat_default_db                          im_user_bean = Error: in prepare, no such table: im_user_bean
+chat_im_user.db                          im_user_bean = Error: in prepare, no such table: im_user_bean
+IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db im_user_bean = Error: in prepare, no such table: im_user_bean
+
+chat_<SESS> tables: android_metadata             im_group_user_relation_bean
+im_anonymity_user_bean       im_user_bean               
+im_group_bean                room_master_table
+chat_SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09 含'没照片': 78067626|没照片我不聊
+408358424|请勿查户口 没照片 不加V
+chat_default_db 含'没照片': Error: in prepare, no such table: im_user_bean
+
+样本(userId|signature):
+5387403|娜依
+14431950|fairy
+19451010|厌👦🤮勿扰🚫
+38223953|可甜可盐。
+78067626|没照片我不聊
+133677664|蓝朋友呀
+138569407|小师妹妹妹
+152732740|今天快乐~ ~

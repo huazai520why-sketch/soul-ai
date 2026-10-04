@@ -1,0 +1,59 @@
+=== info -v 0 === 
+{
+  "adb_port": 16384,
+  "android_version": "15.0",
+  "created_timestamp": 1790959333547292,
+  "disk_size_bytes": 1774528594,
+  "error_code": 0,
+  "hyperv_enabled": false,
+  "index": "0",
+  "info_source": "rpc",
+  "is_android_started": true,
+  "is_main": false,
+  "is_process_started": true,
+  "launch_err_code": 0,
+  "launch_err_msg": "",
+  "launch_time": 1043212,
+  "main_wnd": "05A60626",
+  "name": "17320432910",
+  "pid": 14676,
+  "player_state": "start_finished",
+  "render_wnd": "000304B8",
+  "vt_enabled": true
+}
+=== info -v 1 === 
+{
+  "android_version": "15.0",
+  "created_timestamp": 1790959333621247,
+  "disk_size_bytes": 1286954108,
+  "error_code": 0,
+  "hyperv_enabled": false,
+  "index": "1",
+  "info_source": "rpc",
+  "is_android_started": false,
+  "is_main": false,
+  "is_process_started": false,
+  "name": "17265041951"
+}
+=== info -v 2 === 
+{
+  "errcode": -200,
+  "errmsg": "player index not found",
+  "info_source": "rpc"
+}
+=== soul_worker === 
+soul_auto_reply.py
+soul_device.py
+_chk.py
+_diag3.py
+_gen.py
+_pull.py
+_read.py
+_tapicon.py
+_winmouse.py
+_wm_test.py
+__pycache__
+=== vms dir === 
+MuMuPlayer-15.0-0
+MuMuPlayer-15.0-1
+=== END === 

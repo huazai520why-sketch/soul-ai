@@ -1,0 +1,211 @@
+### 设备 databases/ 目录
+total 3828
+-rw-rw---- 1 u0_a52 u0_a52  77824 2026-10-03 10:54 191281@bd_tea_agent.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 191281@bd_tea_agent.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  77824 2026-10-03 10:54 423944@bd_tea_agent.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 423944@bd_tea_agent.db-journal
+-rw-rw---- 1 u0_a52 u0_a52 122880 2026-10-03 10:29 IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:54 IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db-shm
+-rw------- 1 u0_a52 u0_a52 440872 2026-10-03 10:54 IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db-wal
+-rw-rw---- 1 u0_a52 u0_a52   4096 2026-10-03 00:51 SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:15 SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-shm
+-rw------- 1 u0_a52 u0_a52 181312 2026-10-03 10:04 SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-wal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 09:30 TTVideoEngine_vod_strategy_database_v01
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 09:30 TTVideoEngine_vod_strategy_database_v01-journal
+-rw-rw---- 1 u0_a52 u0_a52  45056 2026-10-03 00:51 adbreakpoint.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:51 adbreakpoint.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  36864 2026-10-03 01:30 apm_monitor_t1.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 01:30 apm_monitor_t1.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  65536 2026-10-03 10:54 bd_tea_agent_240734
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 bd_tea_agent_240734-journal
+-rw-rw---- 1 u0_a52 u0_a52  65536 2026-10-03 10:54 bd_tea_agent_550877
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 bd_tea_agent_550877-journal
+-rw-rw---- 1 u0_a52 u0_a52  61440 2026-10-03 00:50 bugly_db_
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:50 bugly_db_-journal
+-rw-rw---- 1 u0_a52 u0_a52  36864 2026-10-03 00:50 cg.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:50 cg.db-journal
+-rw-rw---- 1 u0_a52 u0_a52   4096 2026-10-03 00:51 chat_SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:54 chat_SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-shm
+-rw------- 1 u0_a52 u0_a52 358472 2026-10-03 10:54 chat_SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-wal
+-rw-rw---- 1 u0_a52 u0_a52   4096 2026-10-03 01:55 component_business_chat_biz
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:17 component_business_chat_biz-shm
+-rw------- 1 u0_a52 u0_a52  41232 2026-10-03 01:55 component_business_chat_biz-wal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 10:54 dim.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 dim.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  24576 2026-10-03 01:30 downloader.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 01:30 downloader.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 09:30 fangqing.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 09:30 fangqing.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  28672 2026-10-03 10:55 gs-ido.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:55 gs-ido.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  32768 2026-10-03 10:51 gtc3.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:51 gtc3.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 10:16 jpush_local_notification.db
+-rw-rw---- 1 u0_a52 u0_a52  32768 2026-10-03 10:16 jpush_local_notification.db-shm
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:16 jpush_local_notification.db-wal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 01:30 lib_log_queue.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 01:30 lib_log_queue.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  24576 2026-10-03 00:50 logger.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:50 logger.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  24576 2026-10-03 00:50 monitor.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:50 monitor.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  24576 2026-10-03 00:50 msre.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:50 msre.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 10:15 msvolcano.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:15 msvolcano.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 00:50 npth_log.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 00:50 npth_log.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  45056 2026-10-03 10:16 pangle_com.byted.live.lite_352969@bd_tea_agent.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:16 pangle_com.byted.live.lite_352969@bd_tea_agent.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  57344 2026-10-03 10:54 pangle_com.byted.live.lite_bd_tea_agent_219989
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 pangle_com.byted.live.lite_bd_tea_agent_219989-journal
+-rw-rw---- 1 u0_a52 u0_a52 434176 2026-10-03 01:30 pangle_com.byted.live.lite_i18n_open_live
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:15 pangle_com.byted.live.lite_i18n_open_live-shm
+-rw------- 1 u0_a52 u0_a52 473832 2026-10-03 01:30 pangle_com.byted.live.lite_i18n_open_live-wal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 01:30 pangle_com.byted.live.lite_npth_log.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 01:30 pangle_com.byted.live.lite_npth_log.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  24576 2026-10-03 01:30 pangle_com.byted.live.lite_psdkmon_v2.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 01:30 pangle_com.byted.live.lite_psdkmon_v2.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  28672 2026-10-03 10:15 pangle_com.byted.live.lite_verifystorage.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:15 pangle_com.byted.live.lite_verifystorage.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  53248 2026-10-03 10:54 pangle_com.byted.pangle_bd_embed_tea_agent.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:54 pangle_com.byted.pangle_bd_embed_tea_agent.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  20480 2026-10-03 01:30 pangle_com.byted.pangle_npth_log.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 01:30 pangle_com.byted.pangle_npth_log.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  90112 2026-10-03 10:15 pangle_com.byted.pangle_ttopensdk.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:15 pangle_com.byted.pangle_ttopensdk.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  32768 2026-10-03 10:15 pangle_com.byted.pangle_ttopensdk2.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:15 pangle_com.byted.pangle_ttopensdk2.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  28672 2026-10-03 10:53 pushg3.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:53 pushg3.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  45056 2026-10-03 10:51 pushsdk.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:51 pushsdk.db-journal
+-rw-rw---- 1 u0_a52 u0_a52  24576 2026-10-03 10:55 soul_analytics_upload_v2_common
+-rw-rw---- 1 u0_a52 u0_a52   4096 2026-10-03 00:50 soul_analytics_upload_v3_event
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:15 soul_analytics_upload_v3_event-shm
+-rw------- 1 u0_a52 u0_a52  37112 2026-10-03 00:50 soul_analytics_upload_v3_event-wal
+-rw-rw---- 1 u0_a52 u0_a52 131072 2026-10-03 10:16 soul_app.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:16 soul_app.db-journal
+-rw-rw---- 1 u0_a52 u0_a52   4096 2026-10-03 01:00 trafficstats_db
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:23 trafficstats_db-shm
+-rw------- 1 u0_a52 u0_a52  94792 2026-10-03 10:23 trafficstats_db-wal
+-rw-rw---- 1 u0_a52 u0_a52  40960 2026-10-03 10:15 zx.db
+-rw-rw---- 1 u0_a52 u0_a52      0 2026-10-03 10:15 zx.db-journal
+
+### 设备 databases/ 全部文件（含子目录）
+/data/data/cn.soulapp.android/databases/bugly_db_-journal
+/data/data/cn.soulapp.android/databases/jpush_local_notification.db-wal
+/data/data/cn.soulapp.android/databases/gtc3.db
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_psdkmon_v2.db
+/data/data/cn.soulapp.android/databases/bugly_db_
+/data/data/cn.soulapp.android/databases/gs-ido.db
+/data/data/cn.soulapp.android/databases/msre.db-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_i18n_open_live-wal
+/data/data/cn.soulapp.android/databases/IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db-wal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_psdkmon_v2.db-journal
+/data/data/cn.soulapp.android/databases/jpush_local_notification.db
+/data/data/cn.soulapp.android/databases/dim.db-journal
+/data/data/cn.soulapp.android/databases/lib_log_queue.db
+/data/data/cn.soulapp.android/databases/msvolcano.db
+/data/data/cn.soulapp.android/databases/jpush_local_notification.db-shm
+/data/data/cn.soulapp.android/databases/bd_tea_agent_550877
+/data/data/cn.soulapp.android/databases/pushsdk.db-journal
+/data/data/cn.soulapp.android/databases/dim.db
+/data/data/cn.soulapp.android/databases/adbreakpoint.db
+/data/data/cn.soulapp.android/databases/adbreakpoint.db-journal
+/data/data/cn.soulapp.android/databases/monitor.db-journal
+/data/data/cn.soulapp.android/databases/zx.db-journal
+/data/data/cn.soulapp.android/databases/logger.db-journal
+/data/data/cn.soulapp.android/databases/chat_SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-wal
+/data/data/cn.soulapp.android/databases/bd_tea_agent_240734
+/data/data/cn.soulapp.android/databases/trafficstats_db
+/data/data/cn.soulapp.android/databases/SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-shm
+/data/data/cn.soulapp.android/databases/fangqing.db
+/data/data/cn.soulapp.android/databases/191281@bd_tea_agent.db
+/data/data/cn.soulapp.android/databases/apm_monitor_t1.db-journal
+/data/data/cn.soulapp.android/databases/bd_tea_agent_550877-journal
+/data/data/cn.soulapp.android/databases/component_business_chat_biz-wal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.pangle_bd_embed_tea_agent.db
+/data/data/cn.soulapp.android/databases/pushsdk.db
+/data/data/cn.soulapp.android/databases/soul_analytics_upload_v3_event-wal
+/data/data/cn.soulapp.android/databases/bd_tea_agent_240734-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_bd_tea_agent_219989-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.pangle_bd_embed_tea_agent.db-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_352969@bd_tea_agent.db-journal
+/data/data/cn.soulapp.android/databases/logger.db
+/data/data/cn.soulapp.android/databases/pushg3.db-journal
+/data/data/cn.soulapp.android/databases/msre.db
+/data/data/cn.soulapp.android/databases/gs-ido.db-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_npth_log.db
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_verifystorage.db-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_npth_log.db-journal
+/data/data/cn.soulapp.android/databases/downloader.db
+/data/data/cn.soulapp.android/databases/soul_analytics_upload_v2_common
+/data/data/cn.soulapp.android/databases/IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db-shm
+/data/data/cn.soulapp.android/databases/monitor.db
+/data/data/cn.soulapp.android/databases/soul_app.db
+/data/data/cn.soulapp.android/databases/lib_log_queue.db-journal
+/data/data/cn.soulapp.android/databases/SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09
+/data/data/cn.soulapp.android/databases/pangle_com.byted.pangle_ttopensdk.db-journal
+/data/data/cn.soulapp.android/databases/pangle_com.byted.live.lite_verifystorage.db
+/data/data/cn.soulapp.android/databases/fangqing.db-journal
+/data/data/cn.soulapp.android/databases/soul_app.db-journal
+/data/data/cn.soulapp.android/databases/cg.db
+/data/data/cn.soulapp.android/databases/component_business_chat_biz-shm
+/data/data/cn.soulapp.android/databases/pangle_com.byted.pangle_npth_log.db
+
+### 设备上 IM-SDK 系列
+-rw-rw---- 1 u0_a52 u0_a52 122880 2026-10-03 10:29 /data/data/cn.soulapp.android/databases/IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db
+-rw------- 1 u0_a52 u0_a52  32768 2026-10-03 10:54 /data/data/cn.soulapp.android/databases/IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db-shm
+-rw------- 1 u0_a52 u0_a52 440872 2026-10-03 10:54 /data/data/cn.soulapp.android/databases/IM-SDK-SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09-DATA.db-wal
+
+### 设备上有没有别的候选（chat/db/sqlite）
+total 104
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 00:50 app_DUHOME
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 00:50 app_bugly
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 00:50 app_crashrecord
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 01:30 app_e_qq_com_dex_a7c85380535acc7a83406e0947616e1b
+drwxrwx--x  3 u0_a52 u0_a52        4096 2026-10-03 01:30 app_e_qq_com_plugin_a7c85380535acc7a83406e0947616e1b
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 00:51 app_flutter
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 00:51 app_glide_temp
+drwxrwx--x  3 u0_a52 u0_a52        4096 2026-10-03 01:30 app_librarian
+drwxrwx--x  3 u0_a52 u0_a52        4096 2026-10-03 01:30 app_libs
+drwxrwx--x  4 u0_a52 u0_a52        4096 2026-10-03 00:50 app_tbs_64
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 00:50 app_textures
+drwxrwx--x  3 u0_a52 u0_a52        4096 2026-10-03 01:30 app_tt_pangle_bykv_file
+drwx------  5 u0_a52 u0_a52        4096 2026-10-03 10:17 app_webview
+drwx------  3 u0_a52 u0_a52        4096 2026-10-03 09:30 app_webview_cn.soulapp.android:pushservice
+drwx------  3 u0_a52 u0_a52        4096 2026-10-03 09:50 app_webview_cn.soulapp.android:remote
+drwxrws--x 13 u0_a52 u0_a52_cache  4096 2026-10-03 10:21 cache
+drwxrws--x  3 u0_a52 u0_a52_cache  4096 2026-10-03 10:29 code_cache
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 10:55 databases
+drwxrwx--x 41 u0_a52 u0_a52        4096 2026-10-03 10:36 files
+drwx------  2 u0_a52 u0_a52        4096 2026-10-03 00:50 lib-main
+drwxrwx--x  2 u0_a52 u0_a52        4096 2026-10-03 01:55 no_backup
+drwx------  3 u0_a52 u0_a52        4096 2026-10-03 01:30 pangle_com.byted.live.lite
+drwx------  2 u0_a52 u0_a52        4096 2026-10-03 01:30 pangle_com.byted.pangle
+drwxrwx--x  2 u0_a52 u0_a52       12288 2026-10-03 10:55 shared_prefs
+-rw-------  1 u0_a52 u0_a52           0 2026-10-03 10:15 tmp.data
+
+### sqlite3 可用？
+/system/bin/sqlite3
+ls: /system/xbin/sqlite3: No such file or directory
+-rwxr-xr-x 1 root shell 248016 2026-09-29 21:35 /system/bin/sqlite3
+
+### soul 目录里的共享盘/后端配置
+SHARED_WIN = D:\MuMuPlayer\vms\MuMuPlayer-15.0-0\private_shared
+
+### E:\soul 顶层 *.db / *.sqlite
+  chat_im.1.db                   90112 bytes
+  chat_im.db                     94208 bytes
+  im_data.1.db                   307200 bytes
+  im_data.db                     122880 bytes
+  soul.db                        0 bytes
+  soul_app.db                    65536 bytes
+  soul_main.db                   12288 bytes
+  soul_memory.db                 0 bytes
+
+### E:\soul\_dbsync
+  E:\soul\_dbsync\stage_watch_20644\im_data.db                 2314240
+  E:\soul\_dbsync\stage_watch_20644\im_data.db-shm             32768
+  E:\soul\_dbsync\stage_watch_20644\im_data.db-wal             449112

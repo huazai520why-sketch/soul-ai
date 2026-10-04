@@ -1,0 +1,31 @@
+### 正式库(实例0)
+    E:\soul\im_data.db
+      db    exists=True  size=122880
+      -wal  exists=False size=-
+      -shm  exists=False size=-
+      chatmsg=55  session=52
+      time range=(1790709551000, 1790994571611)
+### 实例1库
+    E:\soul\im_data.1.db
+      db    exists=True  size=307200
+      -wal  exists=False size=-
+      -shm  exists=False size=-
+      chatmsg=131  session=55
+      time range=(1790775202143, 1790933841478)
+### STAGE E:\soul\_dbsync\stage_watch_20644\im_data.db
+    E:\soul\_dbsync\stage_watch_20644\im_data.db
+      db    exists=True  size=2314240
+      -wal  exists=True  size=449112
+      -shm  exists=True  size=32768
+      chatmsg=2811  session=236
+      time range=(1790259281534, 1790678630430)
+
+### E:\soul 顶层全部文件（含 wal/shm）
+   chat_im.1.db                     90112
+   chat_im.db                       94208
+   im_data.1.db                     307200
+   im_data.db                       122880
+   soul.db                          0
+   soul_app.db                      65536
+   soul_main.db                     12288
+   soul_memory.db                   0

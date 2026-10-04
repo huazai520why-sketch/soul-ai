@@ -1,0 +1,73 @@
+[ 9:37:15.35] === DIAG START === 
+[ 9:37:15.35] mumu-cli info 
+{
+  "adb_port": 16384,
+  "android_version": "15.0",
+  "created_timestamp": 1790959333547292,
+  "disk_size_bytes": 1770335914,
+  "error_code": 0,
+  "hyperv_enabled": false,
+  "index": "0",
+  "info_source": "rpc",
+  "is_android_started": true,
+  "is_main": false,
+  "is_process_started": true,
+  "launch_err_code": 0,
+  "launch_err_msg": "",
+  "launch_time": 1164840,
+  "main_wnd": "000A0068",
+  "name": "17320432910",
+  "pid": 1612,
+  "player_state": "start_finished",
+  "render_wnd": "0006073C",
+  "vt_enabled": true
+}
+[ 9:37:15.51] mumu-cli top help 
+
+OVERVIEW: A utility for control mumu player.
+
+USAGE: <subcommand>
+
+OPTIONS:
+  -h, --help                         Show help information.
+
+SUBCOMMANDS:
+  version                            Get player version.
+  info                               Get players info.
+  create                             Create players.
+  clone                              Clone players. (alias: copy)
+  upgrade                            Upgrade player Android version.
+  delete                             Delete players.
+  rename                             Rename players.
+  import                             Import .mumudata files.
+  export                             Export players as .mumudata files.
+  control                            Control players.
+  setting                            Config players.
+  adb                                Run adb cmd for players.
+  simulation                         Change simulated properties in players.
+  sort                               Layout player windows to sort.
+  driver                             Manage player drivers.
+  log                                Control manager log.
+  sh                                 Run player shell.
+  main                               Control main application.
+
+[ 9:37:15.64] adb connect 127.0.0.1:16384 
+* daemon not running; starting now at tcp:5037
+* daemon started successfully
+cannot connect to 127.0.0.1:16384: 由于目标计算机积极拒绝，无法连接。 (10061)
+[ 9:37:19.74] adb devices 
+List of devices attached
+
+[ 9:37:19.80] wm size 
+adb.exe: device '127.0.0.1:16384' not found
+[ 9:37:19.85] screencap default disp 
+error: device '127.0.0.1:16384' not found
+default_png_size=0 
+[ 9:37:19.91] screencap -d 2 
+error: device '127.0.0.1:16384' not found
+d2_png_size=0 
+[ 9:37:19.97] dumpsys soul display 
+adb.exe: device '127.0.0.1:16384' not found
+[ 9:37:20.02] current focus 
+adb.exe: device '127.0.0.1:16384' not found
+[ 9:37:20.08] === DIAG DONE === 

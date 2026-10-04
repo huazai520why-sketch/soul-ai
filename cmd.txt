@@ -1,0 +1,1 @@
+D:\MuMuPlayer\nx_main\mumu-cli.exe sh -v 0 -c "screencap -d 2 /sdcard/s2.png; echo RC=$?; echo ---DISPLAYS---; dumpsys display | grep -iE 'Display [0-9]|mDisplayId|mode [0-9]|density' | head -40"

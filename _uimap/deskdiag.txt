@@ -1,0 +1,37 @@
+=== 1) 截桌面(before) ===
+desktop 1920x1080
+=== 2) 可见窗口 ===
+  0001051E  CCC.exe                WindowsForms10.Window.8.app.0. [-10000, -10000, -9984, -9961]
+  00140026  explorer.exe           ApplicationFrameWindow         [0, 0, 1582, 702]
+  000101D8  explorer.exe           DummyDWMListenerWindow         [0, 0, 0, 0]
+  000101B0  explorer.exe           DummyDWMListenerWindow         [0, 0, 0, 0]
+  000101AE  explorer.exe           DummyDWMListenerWindow         [0, 0, 0, 0]
+  00020028  TextInputHost.exe      Windows.UI.Core.CoreWindow     [0, 0, 1920, 1080]
+  0001017E  explorer.exe           Progman                        [0, 0, 1920, 1080]
+  0001010E  explorer.exe           Shell_TrayWnd                  [0, 1040, 1920, 1080]
+  000101D0  explorer.exe           EdgeUiInputTopWndClass         [15, 0, 1920, 4]
+  000304B4  MuMuNxMain.exe         Qt5156QWindowToolSaveBits      [534, 250, 1394, 830]
+  05A60626  MuMuNxDevice.exe       Qt5156QWindowIcon              [843, 3, 1384, 995]
+  003C039A  MuMuNxDevice.exe       Qt5156QWindowIcon              [1379, 3, 1920, 994]
+=== 3) 关闭可疑窗口 ===
+  CLOSE 00140026 explorer.exe '' [0, 0, 1582, 702]
+=== 4) 杀残留辅助进程 ===
+  taskkill cmd.exe          rc=0 成功: 已终止进程 "cmd.exe"，其 PID 为 11292。
+  taskkill mumu-cli.exe     rc=128 
+  taskkill wscript.exe      rc=128 
+  taskkill cscript.exe      rc=128 
+  taskkill python.exe       rc=128 
+=== 5) 关闭后可见窗口 ===
+  0001051E  CCC.exe                WindowsForms10.Window.8.app.0. [-10000, -10000, -9984, -9961]
+  00140026  explorer.exe           ApplicationFrameWindow         [0, 0, 1582, 702]
+  000101D8  explorer.exe           DummyDWMListenerWindow         [0, 0, 0, 0]
+  000101B0  explorer.exe           DummyDWMListenerWindow         [0, 0, 0, 0]
+  000101AE  explorer.exe           DummyDWMListenerWindow         [0, 0, 0, 0]
+  00020028  TextInputHost.exe      Windows.UI.Core.CoreWindow     [0, 0, 1920, 1080]
+  0001017E  explorer.exe           Progman                        [0, 0, 1920, 1080]
+  0001010E  explorer.exe           Shell_TrayWnd                  [0, 1040, 1920, 1080]
+  000101D0  explorer.exe           EdgeUiInputTopWndClass         [15, 0, 1920, 4]
+  000304B4  MuMuNxMain.exe         Qt5156QWindowToolSaveBits      [534, 250, 1394, 830]
+  05A60626  MuMuNxDevice.exe       Qt5156QWindowIcon              [843, 3, 1384, 995]
+  003C039A  MuMuNxDevice.exe       Qt5156QWindowIcon              [1379, 3, 1920, 994]
+=== 6) 已重截 desk_after.png ===

@@ -1,0 +1,22 @@
+copy result:
+-rw------- 1 root root 122880 2026-10-03 10:56 /tmp/w.db
+-rw------- 1 root root  32768 2026-10-03 10:56 /tmp/w.db-shm
+-rw------- 1 root root 440872 2026-10-03 10:56 /tmp/w.db-wal
+  local db    exists=True  size=122880
+  local -wal  exists=True  size=440872
+  local -shm  exists=True  size=32768
+  连 WAL 读: chatmsg=55 session=52 range=(1790709551000, 1790996054027)
+     sid=96691646152732740      msgs=2
+     sid=96691646474690451      msgs=2
+     sid=96691646501745348      msgs=2
+     sid=9669164678067626       msgs=2
+     sid=96691646133677664      msgs=1
+     sid=96691646138569407      msgs=1
+     sid=9669164614431950       msgs=1
+     sid=96691646157747589      msgs=1
+     sid=96691646173508167      msgs=1
+     sid=9669164619451010       msgs=1
+
+设备端直查:
+55
+52
