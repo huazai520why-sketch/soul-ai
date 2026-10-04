@@ -1073,11 +1073,38 @@ def _split_msg(t, limit=30):
     return [t[:mid].rstrip(), t[mid:].lstrip()]
 
 
+_ACCT_GATE = {"me": None, "ok": True, "ts": 0.0}
+
+def _account_gate_ok():
+    """⭐ 2026-10-05 账号安全闸：设备当前登录账号必须等于本实例配置账号，
+    否则**绝不代发**（模拟器重启/重登后实测会从账号2 切到账号1 —— 串号级事故）。
+    结果缓存 300s，避免每轮都吃 mumu-cli 超时。
+    """
+    now = time.time()
+    if now - _ACCT_GATE["ts"] < 300:
+        return _ACCT_GATE["ok"]
+    ok, dev_me = True, None
+    try:
+        dev_me = im._device_me()
+        cfg_me = str(im.ME)
+        if dev_me and dev_me != cfg_me:
+            log("  ⛔ 账号安全闸：设备当前账号 %s ≠ 本实例配置账号 %s → 本轮全部跳过（防串号）"
+                % (dev_me, cfg_me))
+            ok = False
+    except Exception:
+        pass
+    _ACCT_GATE.update({"me": dev_me, "ok": ok, "ts": now})
+    return ok
+
+
 def do_reply(name, her_text, st, sid_hint=None):
     """对单个待回：生成 → 发送。返回 'SENT'/'SKIP'/'FAIL'
     ⭐ 2026-10-03 用户方案：在线智囊团(三系辩论)先出多条短话术 → 本地挑一条 → 太长拆两条发
     降级保护：智囊团不可用 → 本地 jianghua 生成（原链路）
     """
+    # ⭐ 2026-10-05 账号安全闸：设备账号≠配置账号 → 直接跳过，绝不代发（防串号）
+    if not _account_gate_ok():
+        return "SKIP"
     # ⭐ 2026-10-04（F1）**sid 优先**：pending() 带出的 sessionId 来自 Soul 自己的会话表，
     #   权威、不依赖 OCR 昵称。原来先按昵称猜 uid，后果有二：
     #     ① 同名多人（实测「小仙女」2 个精确同名）→ 猜错人 → 上下文取自别人；
@@ -1099,42 +1126,54 @@ def do_reply(name, her_text, st, sid_hint=None):
     my_recent = [h["text"] for h in hist if h["role"] == "me"]
     log("  「%s」她发来: %s" % (name, str(her_text)[:32]))
 
-    gated, raw, dropped = [], "", []
-    _brain_ok = False
+    # ⭐ 2026-10-05 预生成话术池（soul_pregen 夜间批量）——命中即秒回，仍过确定性闸
+    #   匹配键=昵称+她最后一句原文；任何异常 → None → 走原生成链路（零风险）
+    _pg = None
     try:
-        import soul_brain as _SB
-        _bt = _SB.brain_reply(hist, her_text)
-        if _bt:
-            try:
-                raw, _ms = gen_pick(_bt, her_text, hist)
-            except Exception as e:
-                log("     !! 本地挑选失败（%r）→ 取第 1 条" % (e,))
-                raw = _bt[0]
-            gated, dropped = gate(raw, her_text, 1, my_recent)
-            log("   ⭐ 智囊团 %d 条=%s | 本地挑: %r | 闸后: %s | 剔: %s"
-                % (len(_bt), _bt, raw, gated, dropped))
-            if not gated:
-                for _t in _bt:            # 挑的这条被闸剔 → 逐条试
-                    _g2, _d2 = gate(_t, her_text, 1, my_recent)
-                    if _g2:
-                        gated, dropped = _g2, _d2
-                        break
-            _brain_ok = bool(gated)
-    except Exception as e:
-        log("     !! 在线智囊团异常（%r）→ 降级本地模型" % (e,))
+        import soul_pregen as _pregen
+        _pg = _pregen.take(name, her_text)
+    except Exception as _e:
+        log("     !! 预生成池异常（%r）→ 走原链路" % (_e,))
+    if _pg:
+        gated, dropped = gate("\n".join(_pg), her_text, N_MSG, my_recent)
+        log("   ⚡预生成池命中（%s）→ 闸后: %s | 剔: %s" % (name, gated, dropped))
+    else:
+        gated, raw, dropped = [], "", []
+        _brain_ok = False
+        try:
+            import soul_brain as _SB
+            _bt = _SB.brain_reply(hist, her_text)
+            if _bt:
+                try:
+                    raw, _ms = gen_pick(_bt, her_text, hist)
+                except Exception as e:
+                    log("     !! 本地挑选失败（%r）→ 取第 1 条" % (e,))
+                    raw = _bt[0]
+                gated, dropped = gate(raw, her_text, 1, my_recent)
+                log("   ⭐ 智囊团 %d 条=%s | 本地挑: %r | 闸后: %s | 剔: %s"
+                    % (len(_bt), _bt, raw, gated, dropped))
+                if not gated:
+                    for _t in _bt:            # 挑的这条被闸剔 → 逐条试
+                        _g2, _d2 = gate(_t, her_text, 1, my_recent)
+                        if _g2:
+                            gated, dropped = _g2, _d2
+                            break
+                _brain_ok = bool(gated)
+        except Exception as e:
+            log("     !! 在线智囊团异常（%r）→ 降级本地模型" % (e,))
 
-    if not _brain_ok:
-        for attempt in range(RETRY_MAX):
-            try:
-                raw, ms = gen_reply(her_text, hist, attempt=attempt,
-                                    banned=(raw.splitlines() + my_recent[-3:]))
-            except Exception as e:
-                log("     !! 生成失败(第%d次) %s: %r" % (attempt + 1, name, e))
-                continue
-            gated, dropped = gate(raw, her_text, N_MSG, my_recent)
-            log("     [第%d稿] %r | 闸后: %s | 剔: %s" % (attempt + 1, raw, gated, dropped))
-            if gated:
-                break
+        if not _brain_ok:
+            for attempt in range(RETRY_MAX):
+                try:
+                    raw, ms = gen_reply(her_text, hist, attempt=attempt,
+                                        banned=(raw.splitlines() + my_recent[-3:]))
+                except Exception as e:
+                    log("     !! 生成失败(第%d次) %s: %r" % (attempt + 1, name, e))
+                    continue
+                gated, dropped = gate(raw, her_text, N_MSG, my_recent)
+                log("     [第%d稿] %r | 闸后: %s | 剔: %s" % (attempt + 1, raw, gated, dropped))
+                if gated:
+                    break
     if not gated:
         n = _bump_try(st, name, her_text)
         log("     ⛔ %d 稿全被闸剔空 → **不发**（宁可沉默）；已试 %d 次"

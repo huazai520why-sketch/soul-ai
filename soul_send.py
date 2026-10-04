@@ -48,15 +48,28 @@ def check_len(text, maxlen=None):
     return True
 
 
+# ⭐ 2026-10-05 修复：以下曾是 900x1600 写死的绝对像素 —— MuMu 重启后屏变成
+#   540x960，y=1511/1316 **全部点在屏外**，导致"语音→文字"激活与录音取消全部失效、
+#   发送链路静默失败（实测：进入会话页后每轮发送 FAIL）。统一改为比例缩放。
 LEFT_ICON = (62, 1511)          # 输入框左侧「语音/文字」模式切换键（6.38.5 + 900x1600 重标定）
 CANCEL_REC = (165, 1316)        # 录音界面「取消」按钮
+_BOTTOM_Y_1600 = 1050           # 900x1600 下"底部(输入框一带)"的 OCR y 阈值
+
+
+def _sc(x, y):
+    """900x1600 旧绝对坐标 → 当前分辨率（等比缩放，540x960 下自动正确）"""
+    return (int(round(x * soul.DEV_W / 900)), int(round(y * soul.DEV_H / 1600)))
+
+
+def _sc_y(y):
+    return int(round(y * soul.DEV_H / 1600))
 
 
 def _bottom_texts():
     """读当前屏底部（输入框一带）的 OCR 文本"""
     try:
         soul.screenshot()
-        return [(t or "").strip() for t, _, cy in (rd.items() or []) if cy > 1050]
+        return [(t or "").strip() for t, _, cy in (rd.items() or []) if cy > _sc_y(_BOTTOM_Y_1600)]
     except Exception:
         return []
 
@@ -89,12 +102,12 @@ def _to_voice_mode(max_try=5):
         low = _bottom_texts()
         m = _mode(low)
         if m == "rec":
-            soul.tap(*CANCEL_REC)
+            soul.tap(*_sc(*CANCEL_REC))
             time.sleep(1.5)
             continue
         if m == "voice":
             return True
-        soul.tap(*LEFT_ICON)
+        soul.tap(*_sc(*LEFT_ICON))
         time.sleep(1.6)
     return False
 
@@ -117,7 +130,7 @@ def _input(box_xy, text):
     key = re.sub(r"\s+", "", text)[:5]
     for attempt in range(3):
         _to_voice_mode()
-        soul.tap(*LEFT_ICON)                # 语音 → 文字（关键：这一下才激活）
+        soul.tap(*_sc(*LEFT_ICON))      # 语音 → 文字（关键：这一下才激活）
         time.sleep(1.6)
         soul.clear_text()
         time.sleep(0.4)
@@ -129,7 +142,7 @@ def _input(box_xy, text):
             return True                      # 字确实进去了
         print(f"[warn] 第{attempt+1}次灌字未生效（底部={low}）→ 重试")
         if _is_recording(low):
-            soul.tap(*CANCEL_REC)
+            soul.tap(*_sc(*CANCEL_REC))
             time.sleep(1.5)
     return False
 

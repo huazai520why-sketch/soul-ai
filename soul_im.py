@@ -133,6 +133,50 @@ def integrity(path=IMDB):
         return False, "%s: %s" % (type(e).__name__, e)
 
 
+def _device_active_sess():
+    """探测设备上当前账号的活动库会话名（重新登录/切号后密钥会变）。
+
+    判据：该库 chatmsg 的 MAX(localTime) 最新（死库/残留库时间戳明显落后）。
+    探测失败退回静态 SESS。结果不缓存——调用方按需探测，避免换号后继续拉错库。
+    """
+    try:
+        import soul_devdb as _dd
+        found = _dd.active_sess(force=True)
+        if found:
+            return found
+    except Exception:
+        pass
+    # 兜底：目录里第一个 IM-SDK-*.db 的名字
+    try:
+        out = _soul.sh(f"ls -1 {DBDIR}/ 2>/dev/null | grep -E '^IM-SDK-'")
+        for line in out.splitlines():
+            m = re.match(r"^IM-SDK-(.+?)-DATA\.db$", line.strip())
+            if m:
+                return m.group(1)
+    except Exception:
+        pass
+    return SESS
+
+
+def _device_me():
+    """探测当前登录账号的 uid（活动库里发消息最多的人 = 账号自己）。
+
+    换号/重登后 ME 可能变（实测实例重启后变成账号1 96691646）。
+    取不到返回 None，调用方自行决定是否用静态 ME。
+    """
+    try:
+        sess = _device_active_sess()
+        db = f"{DBDIR}/IM-SDK-{sess}-DATA.db"
+        out = _soul.sh(f'sqlite3 "{db}" "SELECT senderId, COUNT(*) c FROM chatmsg '
+                       f'WHERE senderId IS NOT NULL GROUP BY senderId ORDER BY c DESC LIMIT 1;" 2>/dev/null')
+        line = (out or "").strip().splitlines()
+        if line and "|" in line[0]:
+            return line[0].partition("|")[0].strip()
+    except Exception:
+        pass
+    return None
+
+
 def pull(retry=4):
     """把两个库(+wal/shm)复制到 sdcard 再拉到本地。
 
@@ -161,7 +205,12 @@ def pull(retry=4):
             Windows 上若被别的进程占着句柄（WinError 5/32）就退避重试；
          ④ 换入后**再校验一次正式库**，失败则明确报错返回 0（上层必须当成失败，不许当"没消息"）。
     """
-    pairs = [(f"IM-SDK-{SESS}-DATA.db", "im_data.db"), (f"chat_{SESS}", "chat_im.db")]
+    # ⭐ 2026-10-05 动态会话发现：账号重新登录/切换后 SESS 密钥会变（实测
+    #   账号2 的 WGpB… 在模拟器重启后被账号1 的 SmNj… 取代，静态 SESS 直接拉空）。
+    #   拉取前先探测设备上「当前活动库」（按 chatmsg 新鲜度），再按它构造文件名；
+    #   探测不到才退回静态 SESS。
+    sess = _device_active_sess()
+    pairs = [(f"IM-SDK-{sess}-DATA.db", "im_data.db"), (f"chat_{sess}", "chat_im.db")]
     SUF = ("", "-wal", "-shm")
     # ⭐ 2026-09-29 并发隔离（读写分离 watcher 落地后实测踩到）：
     #   STAGE / 中转目录原本是**全局唯一**的。后台 watcher 与主流程同时 pull 时，

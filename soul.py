@@ -147,9 +147,208 @@ def _run(args, timeout=40):
         return f"ERR {e!r}"
 
 
+def _run_hard(args, timeout=40):
+    """超时**强杀**版子进程执行器。
+
+    背景（2026-10-05）：mumu-cli 的 sh 桥（NemuShell）坏死时，子进程卡在
+    CreateProcess/管道等待里，`subprocess.run` 的 timeout 到期后 kill() 也会挂死
+    （实测 120s+ 不返回）→ daemon 会卡死在 calibrate()。这里用
+    Popen + communicate(timeout) + taskkill /T 强杀进程树兜底。
+    """
+    try:
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, **_spawn_kw())
+    except Exception as e:
+        return f"ERR {e!r}"
+    try:
+        out, err = p.communicate(timeout=timeout)
+        return ((out or b"").decode("utf-8", "ignore") + (err or b"").decode("utf-8", "ignore")).strip()
+    except subprocess.TimeoutExpired:
+        # 强杀进程树（mumu-cli 可能带着子进程）
+        try:
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/F", "/T"],
+                           timeout=5, capture_output=True, **_spawn_kw())
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            pass
+        return "TIMEOUT"
+    except Exception as e:
+        try:
+            p.kill()
+        except Exception:
+            pass
+        return f"ERR {e!r}"
+
+
+# ---- adb 兜底通道（2026-10-05）----
+# ⚠️ 头部旧注释说"adb 通道不可用（16384 始终拒绝）"是旧版结论；
+#    MuMu 15 现版本每个实例都暴露 adb 端口（vm1=16416 实测可用）。
+#    当 mumu-cli 的 sh 桥（NemuShell）坏死时，adb 直连是唯一能恢复控制的路径。
+_ADB_EXE = None
+_ADB_PORT = None
+_MUMU_SH_FAIL = {"ts": 0.0}            # mumu-cli sh 上次失败时刻
+_MUMU_SH_COOLDOWN = float(os.environ.get("SOUL_SH_FALLBACK_COOLDOWN", "60"))
+# ⭐ 2026-10-05 补：Soul 屏 HWC 长 id 缓存（MuMu 15 的虚拟屏 id 会变动，缓存 30s 即失效重解析）
+_ADB_DISP = {"id": None, "ts": 0.0}
+_ADB_DISP_TTL = 30.0
+
+
+def _find_adb():
+    global _ADB_EXE
+    if _ADB_EXE is None:
+        for cand in (r"D:\MuMuPlayer\nx_main\adb.exe",
+                     r"D:\MuMuPlayer\nx_device\15.0\shell\adb.exe"):
+            if os.path.exists(cand):
+                _ADB_EXE = cand
+                break
+        else:
+            _ADB_EXE = "adb"
+    return _ADB_EXE
+
+
+def _adb_port():
+    """当前实例的 adb 端口：优先从 mumu-cli info 读（RPC 通道通常仍可用）；
+    读不到按 MuMu15 惯例 16384+32*实例号 兜底。"""
+    global _ADB_PORT
+    if _ADB_PORT:
+        return _ADB_PORT
+    try:
+        txt = cli("info", "-v", VMINDEX, timeout=10)
+        m = re.search(r'"adb_port"\s*:\s*(\d+)', txt or "")
+        if m:
+            _ADB_PORT = int(m.group(1))
+            return _ADB_PORT
+    except Exception:
+        pass
+    _ADB_PORT = 16384 + 32 * VMI
+    return _ADB_PORT
+
+
+_ADB_SERIAL = {"s": None, "ts": 0.0}
+
+
+def _adb_serial():
+    """解析当前可用的 adb 设备 serial（重启后端口可能漂移，枚举 devices 最稳）。
+
+    ⭐ 2026-10-05：MuMu 整机重启（control -v all shutdown/launch）后，
+    新实例的 adb 注册成标准模拟器端口（emulator-5554 / 127.0.0.1:5555），
+    而 mumu-cli info 的 adb_port 仍报旧值(16416, offline) → 硬连旧端口必失败。
+    这里优先试 info 端口，离线则从 `adb devices` 里挑第一个 device 状态条目。
+    缓存 60s；失败返回 None 由调用方走原有报错。
+    """
+    now = time.time()
+    if _ADB_SERIAL["s"] and now - _ADB_SERIAL["ts"] < 60:
+        return _ADB_SERIAL["s"]
+    adb = _find_adb()
+    s = None
+    try:
+        port = _adb_port()
+        _run_hard([adb, "connect", f"127.0.0.1:{port}"], timeout=6)
+        out = _run_hard([adb, "devices"], timeout=6) or ""
+        for line in out.splitlines():          # 优先 info 端口（127.0.0.1:x）
+            parts = line.split()
+            if len(parts) >= 2 and parts[1] == "device" and line.strip().startswith("127.0.0.1:"):
+                s = parts[0]
+                break
+        if not s:                              # 兜底：任何 device 条目
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == "device":
+                    s = parts[0]
+                    break
+    except Exception:
+        pass
+    if s:
+        _ADB_SERIAL["s"], _ADB_SERIAL["ts"] = s, now
+    return s
+
+
+def _adb_shell(cmd, timeout=40):
+    """真实 adb shell 执行（mumu-cli sh 桥坏时的兜底通道）"""
+    adb = _find_adb()
+    s = _adb_serial() or f"127.0.0.1:{_adb_port()}"
+    return _run_hard([adb, "-s", s, "shell", cmd], timeout=timeout)
+
+
+def _hwc_id_for_activity(disp):
+    """activity displayId → HWC 长 id。
+    解析 `dumpsys display displays` 的 DisplayViewport 行（displayId=N, uniqueId='local:xxx'）。"""
+    try:
+        adb = _find_adb()
+        s = _adb_serial() or f"127.0.0.1:{_adb_port()}"
+        out = _run_hard([adb, "-s", s, "shell",
+                         "dumpsys display displays 2>/dev/null"], timeout=15)
+        m = re.search(r"displayId=" + re.escape(disp) + r", uniqueId='local:([^']+)'", out or "")
+        if m:
+            return m.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def _soul_disp_hwc(refresh=False):
+    """Soul 所在屏的 HWC 长 id：display() 拿活动屏号 → 映射。失败返回 None。"""
+    d = display(refresh=refresh, max_age=0)
+    if d is None:
+        return None
+    return _hwc_id_for_activity(d)
+
+
+def _adb_screencap(path, timeout=15):
+    """adb exec-out screencap 兜底：从 **Soul 所在虚拟屏** 取帧写 PNG（宿主窗口全黑时用）。
+
+    2026-10-05 实测：MuMu 15 把 Soul 放在动态虚拟屏（mumuscreen00x，id 会变动），
+    默认 screencap 截到的是桌面 → 必须 -d <HWC长id>。返回 True/False。
+    注意：exec-out 是二进制输出，必须用 subprocess 直接拿 bytes，
+    不能走 PowerShell 重定向（会破坏字节流）。
+    """
+    try:
+        adb = _find_adb()
+        s = _adb_serial() or f"127.0.0.1:{_adb_port()}"
+        # 用缓存的 HWC id；超过 30s 或取不到则重新解析（虚拟屏 id 会变）
+        if time.time() - _ADB_DISP["ts"] > _ADB_DISP_TTL:
+            _ADB_DISP["id"], _ADB_DISP["ts"] = _soul_disp_hwc(refresh=True), time.time()
+        hwc = _ADB_DISP["id"]
+        args = [adb, "-s", s, "exec-out", "screencap"]
+        if hwc:
+            args += ["-d", hwc]
+        args += ["-p"]
+        p = subprocess.run(args, capture_output=True, timeout=timeout, **_spawn_kw())
+        if p.returncode == 0 and p.stdout and len(p.stdout) > 20000:
+            data = p.stdout
+            idx = data.find(b"\x89PNG\r\n\x1a\n")
+            if idx > 0:
+                data = data[idx:]   # 剥掉 adb 的 "[Warning] Multiple displays..." 前缀
+            if len(data) > 20000:
+                with open(path, "wb") as f:
+                    f.write(data)
+                return True
+        # 拿不到 → 清缓存，下次重解析
+        _ADB_DISP["id"], _ADB_DISP["ts"] = None, 0.0
+    except Exception:
+        pass
+    return False
+
+
 def sh(cmd, timeout=40):
-    """在模拟器内执行 shell（等价 adb shell），走 mumu-cli 免端口通道"""
-    return _run([MUMU_CLI, "sh", "-v", VMINDEX, "-c", cmd], timeout=timeout)
+    """在模拟器内执行 shell（等价 adb shell）。
+
+    主通道：mumu-cli sh（免端口）。2026-10-05 起增加兜底：
+    主通道超时/坏死时（NemuShell 桥挂死，Windows 上连 timeout 都杀不掉），
+    自动切到真实 adb 直连通道；失败后进入 60s 冷却，冷却期内直走 adb。
+    """
+    if time.time() - _MUMU_SH_FAIL["ts"] > _MUMU_SH_COOLDOWN:
+        out = _run_hard([MUMU_CLI, "sh", "-v", VMINDEX, "-c", cmd], timeout=min(timeout, 10))
+        if out != "TIMEOUT":
+            return out
+        _MUMU_SH_FAIL["ts"] = time.time()
+        print(f"!! mumu-cli sh 超时（{cmd[:40]}…）→ 切 adb 兜底通道")
+    return _adb_shell(cmd, timeout=timeout)
 
 
 def cli(*args, timeout=60):
@@ -179,6 +378,11 @@ _SHOT_CACHE = {"ts": 0.0}
 # 「聊天列表已滚到顶」进程内状态： avoid 重复回顶（_scroll_top 一次要几十秒）
 _TOP_STATE = {"at_top": False}
 
+# ⭐ 2026-10-05：winshot（宿主窗口截图）失败冷却 —— MuMu 渲染管线坏掉时窗口恒黑，
+#   每次截图先试 3 次 winshot 纯浪费（约 4s）。冷却期内直走 adb screencap。
+_WINSHOT_FAIL = {"ts": 0.0}
+_WINSHOT_COOLDOWN = 120.0
+
 
 def _shot_used():
     """标记：刚用过截图（内部用）"""
@@ -204,15 +408,8 @@ def at_top():
     return bool(_TOP_STATE.get("at_top"))
 
 
-def display(refresh=False, max_age=120):
-    """返回 Soul 当前所在 display 号；找不到返回 None（调用方必须拒绝操作）。
-
-    MuMu 15 把 App 放在独立虚拟屏（mumuscreenNNN），
-    `input` 不带 -d 默认打到 display 0（桌面）→ 点了等于没点/乱点。
-    """
-    _maybe_recalibrate()          # ⭐ 2026-10-04 分辨率变化自动重校准
-    if not refresh and _DISP_CACHE["d"] is not None and time.time() - _DISP_CACHE["ts"] < max_age:
-        return _DISP_CACHE["d"]
+def _display_locate():
+    """定位 Soul 当前所在 display（一次尝试）。失败返回 None。"""
     out = sh("dumpsys activity activities 2>/dev/null")
     d = None
     cur = None
@@ -245,6 +442,25 @@ def display(refresh=False, max_age=120):
                     break
         except Exception as e:
             print("!! display fallback 失败:", e)
+    return d
+
+
+def display(refresh=False, max_age=120):
+    """返回 Soul 当前所在 display 号；找不到返回 None（调用方必须拒绝操作）。
+
+    MuMu 15 把 App 放在独立虚拟屏（mumuscreenNNN），
+    `input` 不带 -d 默认打到 display 0（桌面）→ 点了等于没点/乱点。
+    """
+    _maybe_recalibrate()          # ⭐ 2026-10-04 分辨率变化自动重校准
+    if not refresh and _DISP_CACHE["d"] is not None and time.time() - _DISP_CACHE["ts"] < max_age:
+        return _DISP_CACHE["d"]
+    d = None
+    for attempt in range(3):      # ⭐ 2026-10-05 重试：导航/切页瞬变期 dumpsys 偶发不全
+        d = _display_locate()
+        if d is not None:
+            break
+        if attempt < 2:
+            time.sleep(1.2 + attempt * 1.2)
     _DISP_CACHE["d"] = d
     _DISP_CACHE["ts"] = time.time()
     if d is None:
@@ -252,9 +468,37 @@ def display(refresh=False, max_age=120):
     return d
 
 
+_ADB_ROOT_DONE = {}
+
+def _adb_ensure_root():
+    """⭐ 2026-10-05：MuMu 重启后 adbd 常以 shell 身份跑（uid=2000），
+    /data/data 读不到 → im.pull / verify_sent 全部失败（实测"发送未成功"）。
+    用 `adb root` 自愈；每个进程只做一次（root 后 adbd 重启，连接自动恢复）。"""
+    try:
+        adb = _find_adb()
+        if _ADB_ROOT_DONE.get("once"):
+            return True
+        s = _adb_serial() or f"127.0.0.1:{_adb_port()}"
+        out = _run_hard([adb, "-s", s, "shell", "id"], timeout=8) or ""
+        if "uid=0" in out:
+            _ADB_ROOT_DONE["once"] = True
+            return True
+        _run_hard([adb, "-s", s, "root"], timeout=10)
+        time.sleep(3)                                  # adbd 重启窗口
+        _ADB_SERIAL["s"] = None                        # root 后重解析 serial
+        s2 = _adb_serial() or f"127.0.0.1:{_adb_port()}"
+        out2 = _run_hard([adb, "-s", s2, "shell", "id"], timeout=8) or ""
+        _ADB_ROOT_DONE["once"] = "uid=0" in out2
+        return _ADB_ROOT_DONE["once"]
+    except Exception:
+        return False
+
+
 def connect(max_age=60):
-    """兼容旧 API。MuMu 走 CLI 不需要连接，仅做一次存活检查。"""
+    """兼容旧 API。MuMu 走 CLI 不需要连接，仅做一次存活检查 + adb root 自愈。"""
     out = sh("echo ok", timeout=20)
+    if "ok" in out:
+        _adb_ensure_root()
     return "ok" if "ok" in out else out
 
 
@@ -731,15 +975,33 @@ def screenshot(path=None, retry=2, force=False):
         #   缓存视为过期重截 —— 防止读到别人操作前的旧帧（串台级风险）
         return path
     ws = os.path.join(BASE, "winshot.py")
-    for _ in range(retry + 1):
-        r = _run([sys.executable, ws, path], timeout=60)
-        # ⭐ 2026-10-04：空白/单色帧同样不算成功（winshot 会在消息里带"空白"）
-        if (os.path.exists(path) and os.path.getsize(path) > 5000
-                and "全黑" not in r and "空白" not in r):
-            _SHOT_CACHE["ts"] = time.time()
-            return path
-        time.sleep(0.8)
-    print(f"!! 截图失败: {r[:150]}")
+    tried_winshot = False
+    if time.time() - _WINSHOT_FAIL["ts"] > _WINSHOT_COOLDOWN:
+        tried_winshot = True
+        for _ in range(retry + 1):
+            r = _run([sys.executable, ws, path], timeout=60)
+            # ⭐ 2026-10-04：空白/单色帧同样不算成功（winshot 会在消息里带"空白"）
+            if (os.path.exists(path) and os.path.getsize(path) > 5000
+                    and "全黑" not in r and "空白" not in r):
+                _SHOT_CACHE["ts"] = time.time()
+                _WINSHOT_FAIL["ts"] = 0.0          # 恢复健康 → 清冷却
+                return path
+            time.sleep(0.8)
+        _WINSHOT_FAIL["ts"] = time.time()          # winshot 本轮失败 → 进冷却
+    # （冷却期内直接落到下面，不再试 winshot）
+    # ⭐ 2026-10-05：宿主渲染窗口全黑（MuMuNxMain 渲染管线坏死）时，
+    #   winshot 拿不到帧 → 切 adb screencap 从 guest 内部取帧。
+    #   ⭐ 2026-10-05：导航/切页时 display 瞬变（HWC id 漂移），adb 兜底偶发失败 → 重试 2 次
+    ok_shot = False
+    for _ in range(3):
+        if _adb_screencap(path):
+            ok_shot = True
+            break
+        time.sleep(1.2)
+    if ok_shot:
+        _SHOT_CACHE["ts"] = time.time()
+        return path
+    print(f"!! 截图失败: {r[:150] if tried_winshot else 'winshot 冷却跳过 + adb 兜底失败'}")
     return None
 
 
