@@ -269,6 +269,9 @@ def _sendable(name):
 def _deliver(name, texts, my_recent=None, allow_chain=False):
     """统一发送通道：快速路径优先，MISS 才回退全路径。
     返回 "SENT"/"SKIP"(硬闸) /"FAIL"。do_reply 与 wake_old 共用。"""
+    # ⭐ 2026-10-05 账号安全闸（放这里：do_reply 与 wake_old 两条发送路径都覆盖）
+    if not _account_gate_ok():
+        return "SKIP"
     if allow_chain:
         # ⭐ 2026-10-03 拆分条只走全路径（快速路径不认连发豁免）
         try:
