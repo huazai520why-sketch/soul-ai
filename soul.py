@@ -625,8 +625,22 @@ def activity():
 
 
 def on_main():
+    """Soul 主框架（MainActivity）是否在前台。
+
+    ⭐ 2026-10-05 治本：MuMu 多虚拟屏时 mFocusedWindow（焦点窗口）可能停在
+       桌面 Launcher，而 Soul 实际已 resumed 到虚拟屏（topResumedActivity）。
+       只信焦点会误判"不在主框架" → 疯狂清栈 → 越弄越乱。
+       现以 topResumedActivity 是否为 Soul 的 MainActivity 为准。
+    """
     a = activity()
-    return bool(a) and ("startup.main.MainActivity" in a or a.endswith("MainActivity"))
+    if a and ("startup.main.MainActivity" in a or a.endswith("MainActivity")):
+        return True
+    try:
+        out = sh("dumpsys activity activities 2>/dev/null")
+        return bool(re.search(
+            r"topResumedActivity=.*?cn\.soulapp\.android[^\s]*MainActivity", out))
+    except Exception:
+        return False
 
 
 def app_running(pkg="cn.soulapp.android"):
