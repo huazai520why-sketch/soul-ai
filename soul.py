@@ -417,7 +417,15 @@ def at_top():
 
 
 def _display_locate():
-    """定位 Soul 当前所在 display（一次尝试）。失败返回 None。"""
+    """定位 Soul 当前所在 display（一次尝试）。失败返回 None。
+
+    ⭐ 2026-10-05 实测：MuMu 15 上 dumpsys activity 会列出多个 Display（#40/#41/#0），
+       Soul 的 topResumedActivity 行所在块才是真号；#0 是桌面。
+       原 fallback（dumpsys window windows 找 mDisplayId）在 Android 15 格式下
+       **会把 mDisplayId=0 错配给 Soul 窗口** → tap -d 0 = 点击全部打到桌面
+       （"页面异常/导航失败"假象）。已删除该 fallback：activity 抽风时
+       由 display() 的缓存回退兜住，宁可放弃本轮也不打桌面。
+    """
     out = sh("dumpsys activity activities 2>/dev/null")
     d = None
     cur = None
@@ -434,22 +442,6 @@ def _display_locate():
         m = re.search(r"Display #(\d+) \(activities[^)]*\):\s*\n\s*topResumedActivity=\S+ \S+ (cn\.soulapp\.android)", out)
         if m:
             d = m.group(1)
-    # ⭐ 2026-10-03 新增 fallback：Android 15 上 dumpsys activity 的格式变了，
-    #    原逻辑拿不到 display。改用 dumpsys window windows 找 Soul 窗口的 mDisplayId。
-    if d is None:
-        try:
-            out2 = sh("dumpsys window windows 2>/dev/null", timeout=20)
-            # 逐窗口块扫描：块内含 cn.soulapp.android 且带 mDisplayId=N
-            cur_disp = None
-            for line in out2.splitlines():
-                md = re.search(r"mDisplayId=(\d+)", line)
-                if md:
-                    cur_disp = md.group(1)
-                if "cn.soulapp.android" in line and cur_disp is not None:
-                    d = cur_disp
-                    break
-        except Exception as e:
-            print("!! display fallback 失败:", e)
     return d
 
 
@@ -520,18 +512,26 @@ def connect(max_age=60):
 
 # ============================ 输入 ============================
 def tap(x, y, retry=2):
-    """点击（自动带 -d）。找不到 display 时拒绝执行。"""
+    """点击（自动带 -d）。找不到 display 时拒绝执行。
+
+    ⭐ 2026-10-05：点击报错（input 命令本身失败）时，可能是 MainActivity 重建 /
+       虚拟屏重新分配瞬间 → 强制 display(refresh=True) 重查后再试，不再死磕旧号。
+    """
     d = display()
     if d is None:
         return "NO_DISPLAY"
     invalidate_shot()                 # 点击必然改变界面 → 作废截图缓存
     mark_top(False)                   # 位置可能变了 → 不再相信"在顶部"
     last = ""
-    for _ in range(retry + 1):
+    for i in range(retry + 1):
         last = sh(f"input -d {d} tap {int(x)} {int(y)}")
         if "Exception" not in last and "Error" not in last:
             return last
         time.sleep(0.4)
+        if i < retry:
+            d = display(refresh=True)   # 虚拟屏重建 → 重新定位再试
+            if d is None:
+                break
     return last
 
 
