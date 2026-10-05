@@ -1034,10 +1034,14 @@ def _display_guard():
 def _ensure_device():
     for i in (1, 2):
         try:
-            if not soul.app_running():
-                log("  设备：Soul 未运行 → 启动")
-                soul.launch_app(wait=12)
             d = soul.display(refresh=True)
+            if d is None or not soul.app_running():
+                # ⭐ 2026-10-05 治本：MuMu 上 Soul 会自己掉后台（进程在但无 resumed）
+                #   → 之前只在"进程不在"时才拉起，掉后台就漏了 → 连续失败计数。
+                #   现在 display=None（无论进程在不在）都拉回前台。
+                log("  设备：Soul 不在前台/未运行 → 拉起")
+                soul.launch_app(wait=12, wait_disp=20)
+                d = soul.display(refresh=True)
             if soul.app_running() and d is not None:
                 return True
             log("  设备：第 %d 次未就绪 (running=%s, display=%s)"
