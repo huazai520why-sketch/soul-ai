@@ -626,6 +626,7 @@ def launch_app(pkg="cn.soulapp.android", wait=8):
     cli("control", "-v", VMINDEX, "app", "launch", "--package", pkg)
     invalidate_shot()
     mark_top(False)
+    _DISP_CACHE["d"] = None      # ⭐ 2026-10-05：App 重启可能落到新虚拟屏（6→15 实测）→ 不许复用旧号
     time.sleep(wait)
 
 
@@ -643,6 +644,12 @@ def restart_app(wait=8):
     close_app()
     time.sleep(1.5)
     launch_app(wait=wait)
+    _DISP_CACHE["d"] = None
+
+
+def invalidate_display():
+    """⭐ 2026-10-05：窗口重建/切屏后调用，强制下次重新定位 display 号。
+    MuMu 虚拟屏号会在运行中漂移（实测 6→15），旧号点击会静默打空。"""
     _DISP_CACHE["d"] = None
 
 

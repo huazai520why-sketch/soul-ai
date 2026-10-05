@@ -1186,6 +1186,7 @@ def _goto_chat_list():
         if _on_chat_list():
             break
         soul.adb("shell", "am", "start", "-n", ACT, "--activity-clear-top")
+        soul.invalidate_display()   # ⭐ 2026-10-05：清栈=重启主活动 → 可能落新虚拟屏，强制重查
         time.sleep(2.2)
         soul.close_kid_popup()          # ⭐ 清栈=冷启动 → 弹窗必现，必须再关一次
         if soul.on_main() and not _on_chat_list():
