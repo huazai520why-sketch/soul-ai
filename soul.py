@@ -94,13 +94,30 @@ _LAST_CALIBRATED = {"w": DEV_W, "h": DEV_H}
 def calibrate():
     """用 `wm size` 实测分辨率重建坐标。开局跑一次即可（约 0.3s，不必每进程都跑）。"""
     global DEV_W, DEV_H
+    w, h = None, None
     try:
         m = re.search(r"(\d{3,5})\s*[xX]\s*(\d{3,5})", sh("wm size", timeout=10) or "")
         if m:
-            DEV_W, DEV_H = int(m.group(1)), int(m.group(2))
-            _LAST_CALIBRATED["w"], _LAST_CALIBRATED["h"] = DEV_W, DEV_H
+            w, h = int(m.group(1)), int(m.group(2))
     except Exception:
         pass
+    if not (w and h):
+        # ⭐ 2026-10-05 治本（用户整上午"发送未成功"的终极根因）：
+        #   MuMu 15 的 `wm size` 经常无输出（shell 权限/服务抽风）→ DEV 保持默认
+        #   900x1600，而实例 0 实际是 540x960 → 坐标全歪 → tap 聊天 tab 点到底部
+        #   导航栏 → Soul 切后台（Launcher）→ 导航全挂、回复全失败。
+        #   用窗口截图实测尺寸兜底（screenshot 每次必成功）。
+        try:
+            p = screenshot(force=True)
+            if p and os.path.exists(p) and os.path.getsize(p) > 5000:
+                import PIL.Image
+                im = PIL.Image.open(p)
+                w, h = im.size
+        except Exception:
+            pass
+    if w and h:
+        DEV_W, DEV_H = int(w), int(h)
+        _LAST_CALIBRATED["w"], _LAST_CALIBRATED["h"] = DEV_W, DEV_H
     _rebuild_coords()
     return DEV_W, DEV_H
 
@@ -451,6 +468,7 @@ def display(refresh=False, max_age=120):
     `input` 不带 -d 默认打到 display 0（桌面）→ 点了等于没点/乱点。
     """
     _maybe_recalibrate()          # ⭐ 2026-10-04 分辨率变化自动重校准
+    _dbg = (refresh, dict(_DISP_CACHE))
     if not refresh and _DISP_CACHE["d"] is not None and time.time() - _DISP_CACHE["ts"] < max_age:
         return _DISP_CACHE["d"]
     d = None
@@ -472,6 +490,8 @@ def display(refresh=False, max_age=120):
         _DISP_CACHE["ts"] = time.time()
     if d is None:
         print("!! 未能定位 Soul 所在 display → 拒绝所有点击（防止打到桌面）")
+    if d is None and _dbg[1]["d"] is not None:
+        print(f"  [debug] display(refresh={_dbg[0]}) 前置缓存={_dbg[1]['d']}(ts={int(_dbg[1]['ts'])},age={int(time.time()-_dbg[1]['ts'])}) → 返回 None")
     return d
 
 

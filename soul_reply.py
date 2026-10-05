@@ -1177,6 +1177,7 @@ def _goto_chat_list():
     soul.close_kid_popup()
     # ① 主框架内纠 tab
     if soul.on_main() and not _on_chat_list():
+        print(f"  [debug] ①tap前缓存={soul._DISP_CACHE}")
         soul.tap(*CHAT_TAB)
         time.sleep(1.8)
     # ② 还不行 → 清栈重启主活动，再补点「聊天」tab
@@ -1433,6 +1434,7 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
         if not soul.display(refresh=True):
             print("!! 重启 Soul 后 display 仍无法定位 → 本轮放弃，等下轮重试")
             return False
+    print(f"  [debug] 入口检查后缓存={soul._DISP_CACHE}")
     # ⭐ 2026-09-29：动作前**显式打印当前页面**（用户要求「操作之前你要先看看自己在哪个页面」）
     print(f"  [页面] 操作前：{_page_state()}")
     # ⭐ 更新全局锁心跳：让"上一轮是否还在跑"判断得出来（跨实例互斥用）

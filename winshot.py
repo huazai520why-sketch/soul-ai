@@ -130,7 +130,7 @@ def _cur_render_wnd():
     cli = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
     try:
         out = subprocess.run([cli, "info", "-v", _vm_index()], capture_output=True,
-                             timeout=25, creationflags=_NW).stdout.decode("utf-8", "ignore")
+                             timeout=10, creationflags=_NW).stdout.decode("utf-8", "ignore")
         m = re.search(r'"render_wnd"\s*:\s*"([0-9A-Fa-f]+)"', out)
         return int(m.group(1), 16) if m else None
     except Exception:
@@ -240,6 +240,25 @@ def capture(hwnd, out):
     buf = ctypes.create_string_buffer(w * h * 4)
     gdi32.GetDIBits(hdc_mem, hbm, 0, h, buf, ctypes.byref(bi), DIB_RGB_COLORS)
     data = buf.raw
+
+    # ⭐ 2026-10-05 治本（daemon 全天"发送未成功"的终极根因）：
+    #   PrintWindow 对 MuMu 15 的 GPU 渲染窗口极不稳定（窗口后台/被遮挡时必黑，
+    #   daemon 后台跑 → 截图全黑 → OCR 失败 → 页面误判 → 导航/发送全失败）。
+    #   加 BitBlt 屏幕区域兜底：从屏幕 DC 直接截取窗口矩形（GPU 内容可靠，不依赖
+    #   窗口前台状态）。实测 BitBlt 稳定拿到 Soul 画面（540x960）。
+    #   MuMu 窗口被完全遮挡时 BitBlt 会截到遮挡窗口 → 由下方 BLANK_COLORS 单色检测
+    #   与文件大小校验兜住（完全遮挡=纯色/他人画面，下游 OCR 对不上页面即放弃本轮）。
+    if (not ok) or data[:4000] == b"\x00" * 4000:
+        hdc_screen = user32.GetDC(0)
+        ok2 = gdi32.BitBlt(hdc_mem, 0, 0, w, h, hdc_screen, r.left, r.top, SRCCOPY)
+        user32.ReleaseDC(0, hdc_screen)
+        if not ok2:
+            gdi32.DeleteObject(hbm)
+            gdi32.DeleteDC(hdc_mem)
+            user32.ReleaseDC(hwnd, hdc_win)
+            return "PrintWindow 与 BitBlt 都失败"
+        gdi32.GetDIBits(hdc_mem, hbm, 0, h, buf, ctypes.byref(bi), DIB_RGB_COLORS)
+        data = buf.raw
 
     gdi32.DeleteObject(hbm)
     gdi32.DeleteDC(hdc_mem)
