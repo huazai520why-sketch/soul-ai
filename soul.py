@@ -469,12 +469,16 @@ def display(refresh=False, max_age=120):
             break
         if attempt < 2:
             time.sleep(2.0 + attempt * 2.0)   # adb shell dumpsys 慢通道留足时间
-    if d is None and time.time() - _DISP_CACHE["ts"] < max_age:
-        # ⭐ 2026-10-05 修复：dumpsys 抽风时不得用 None 覆盖"仍新鲜"的已知值，
-        #   本轮内 display 号不会变（只有重启/换屏才会变）→ 回退缓存继续干活。
+    # ⭐ 2026-10-05 治本（虚拟屏号漂移 6→15→21 后导航全挂的根因）：
+    #   定位失败**绝不把有效缓存覆盖成 None**。虚拟屏号只会在「窗口重建」
+    #   （am start 清栈 / launch_app / MuMu 渲染重建）时变，而那些路径都已
+    #   invalidate_display() 清缓存。正常导航轮内 dumpsys 间歇抽风 ≠ display 变了
+    #   → 回退缓存继续干；只有缓存被 invalidate（None）且重查失败才拒绝点击。
+    if d is None and _DISP_CACHE["d"] is not None:
         d = _DISP_CACHE["d"]
-    _DISP_CACHE["d"] = d
-    _DISP_CACHE["ts"] = time.time()
+    if d is not None:
+        _DISP_CACHE["d"] = d
+        _DISP_CACHE["ts"] = time.time()
     if d is None:
         print("!! 未能定位 Soul 所在 display → 拒绝所有点击（防止打到桌面）")
     return d
