@@ -460,7 +460,11 @@ def display(refresh=False, max_age=120):
         if d is not None:
             break
         if attempt < 2:
-            time.sleep(1.2 + attempt * 1.2)
+            time.sleep(2.0 + attempt * 2.0)   # adb shell dumpsys 慢通道留足时间
+    if d is None and time.time() - _DISP_CACHE["ts"] < max_age:
+        # ⭐ 2026-10-05 修复：dumpsys 抽风时不得用 None 覆盖"仍新鲜"的已知值，
+        #   本轮内 display 号不会变（只有重启/换屏才会变）→ 回退缓存继续干活。
+        d = _DISP_CACHE["d"]
     _DISP_CACHE["d"] = d
     _DISP_CACHE["ts"] = time.time()
     if d is None:
@@ -516,7 +520,6 @@ def tap(x, y, retry=2):
         if "Exception" not in last and "Error" not in last:
             return last
         time.sleep(0.4)
-        _DISP_CACHE["d"] = None      # display 可能变了，强制重查
     return last
 
 

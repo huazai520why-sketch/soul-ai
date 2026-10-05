@@ -1586,7 +1586,7 @@ def _watchdog():
 
 
 def _singleton():
-    """守护单例（**独立锁文件**版）。
+    """守护单例（**独立锁文件版**）。
 
     ⭐ 2026-10-04 修「双守护」根因：
       原实现拿 PIDF（信息文件）当锁文件，而重启/清理脚本会 os.remove(PIDF)；
@@ -1594,7 +1594,24 @@ def _singleton():
       → 两个 daemon 同时活着（实测 00:32:09 起了 11340/7092，两个都在跑）。
       改为**独立锁文件 LOCKD（从不删除）**承载互斥；PIDF 只存 pid 供排查，
       随便删都不影响单例。
+    ⭐ 2026-10-05 再加一层：内核命名互斥锁（CreateMutexW）先行。
+      实测本机 msvcrt 文件锁存在竞态（同文件可被多进程同时 a+ 打开，
+      出现双 guard/双 daemon 都活着、第二个进程卡在 open/locking 不退出），
+      内核互斥由操作系统保证全局唯一，先于文件锁判定。
     """
+    try:
+        import ctypes
+        _MUTEXH = ctypes.windll.kernel32.CreateMutexW(None, False,
+                                                      "SoulDaemon_%s" % VM)
+        if not _MUTEXH:
+            return False
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            ctypes.windll.kernel32.CloseHandle(_MUTEXH)
+            log("已有守护进程（内核互斥）在跑 → 本进程退出")
+            return False
+        globals()["_MUTEXH"] = _MUTEXH
+    except Exception as _e:
+        log("内核互斥异常 %r → 退化文件锁" % (_e,))
     try:
         import msvcrt
         fh = open(LOCKD, "a+")

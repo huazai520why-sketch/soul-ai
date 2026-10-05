@@ -51,6 +51,7 @@ SLOT_DAY_VM = str(os.environ.get("SOUL_SLOT_DAY_VM", "0"))            # 白天�
 SLOT_NIGHT_VM = str(os.environ.get("SOUL_SLOT_NIGHT_VM", "1"))        # 晚上跑哪个实例
 
 _LOCKFH = None
+_MUTEXH = None
 
 
 def log(s):
@@ -62,12 +63,41 @@ def log(s):
 
 
 def _run(args, timeout=30):
-    """跑一条命令并吞掉输出（绝不抛异常打断守护循环）。"""
+    """跑一条命令并吞掉输出（绝不抛异常打断守护循环）。
+
+    ⭐ 2026-10-05 修复：原 subprocess.run(timeout) 在 mumu-cli 桥挂死时
+    （本机实测 NemuShell 桥坏死，mumu-cli 进程僵住不响应）kill() 也会卡住，
+    guard 整循环冻结 → 不再拉起 daemon（守护形同虚设）。
+    改为 Popen+communicate(timeout)+taskkill /T 强杀进程树，超时必返回。
+    """
     try:
-        r = subprocess.run(args, capture_output=True, timeout=timeout,
-                           creationflags=NO_WINDOW)
-        return r.stdout.decode("utf-8", "ignore")
+        p = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             creationflags=NO_WINDOW)
     except Exception:
+        return ""
+    try:
+        out, err = p.communicate(timeout=timeout)
+        return ((out or b"").decode("utf-8", "ignore")
+                + (err or b"").decode("utf-8", "ignore")).strip()
+    except subprocess.TimeoutExpired:
+        try:
+            subprocess.run(["taskkill", "/PID", str(p.pid), "/F", "/T"],
+                           capture_output=True, timeout=5, creationflags=NO_WINDOW)
+        except Exception:
+            try:
+                p.kill()
+            except Exception:
+                pass
+        try:
+            p.wait(timeout=3)
+        except Exception:
+            pass
+        return ""
+    except Exception:
+        try:
+            p.kill()
+        except Exception:
+            pass
         return ""
 
 
@@ -178,8 +208,24 @@ def _drop_round_lock():
 
 
 def _acquire():
-    """文件锁单例：拿到返回 True；已被别的 guard 持有返回 False"""
-    global _LOCKFH
+    """单例双重保险：先内核命名互斥锁（强互斥、无文件锁竞态），再文件锁。
+    ⭐ 2026-10-05 修复：msvcrt 文件锁在本机实测不可靠（同文件可被多进程同时"a+"打开，
+    卡死/双启动都出现过）→ 前置 CreateMutexW，跨进程由内核保证唯一。"""
+    global _MUTEXH
+    try:
+        import ctypes
+        _MUTEXH = ctypes.windll.kernel32.CreateMutexW(None, False,
+                                                      "SoulGuard_%s" % VM)
+        if not _MUTEXH:
+            return False
+        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
+            ctypes.windll.kernel32.CloseHandle(_MUTEXH)
+            _MUTEXH = None
+            log("已有 guard（内核互斥）在跑 → 本进程退出")
+            return False
+    except Exception as e:
+        log("内核互斥异常 %r → 退化文件锁" % (e,))
+        _MUTEXH = None
     try:
         import msvcrt
         fh = open(LOCKG, "a+")
