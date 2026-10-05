@@ -633,12 +633,44 @@ def app_running(pkg="cn.soulapp.android"):
     return pkg in sh(f"ps -A | grep {pkg}")
 
 
-def launch_app(pkg="cn.soulapp.android", wait=8):
-    cli("control", "-v", VMINDEX, "app", "launch", "--package", pkg)
+def _wait_display(timeout=25):
+    """循环等待 Soul resumed 就绪（冷启动/重启后 topResumedActivity 迟现）。
+
+    ⭐ 2026-10-05：Soul 冷启动到 resumed 需 10-15s，display(refresh=True) 的
+       3 次重试（约 6s）不够 → 定位 None → 整轮放弃。这里每 2.5s 重查，
+       最长 timeout 秒，拿到号即返回；超时返回 None。
+    """
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        d = _display_locate()
+        if d is not None:
+            _DISP_CACHE["d"] = d
+            _DISP_CACHE["ts"] = time.time()
+            return d
+        time.sleep(2.5)
+    print(f"  !! 等不到 Soul resumed（{int(timeout)}s）→ display 定位放弃")
+    return None
+
+
+def launch_app(pkg="cn.soulapp.android", wait=8, wait_disp=25):
+    """启动 Soul 到前台。
+
+    ⭐ 2026-10-05 治本：mumu-cli 桥（NemuShell）持续坏死，每次调用必超时 10s，
+       之前 launch_app 走 cli() → App 实际没被拉起 → 桌面 Launcher →
+       display 定位失败 → 整轮作废。现直走 adb `am start`（与 sh() 直走 adb 一致），
+       再循环等待 Soul resumed 就绪，确保号拿到才返回。
+    """
     invalidate_shot()
     mark_top(False)
-    _DISP_CACHE["d"] = None      # ⭐ 2026-10-05：App 重启可能落到新虚拟屏（6→15 实测）→ 不许复用旧号
+    _DISP_CACHE["d"] = None      # ⭐ 2026-10-05：App 重启可能落到新虚拟屏 → 不许复用旧号
+    try:
+        sh(f"am start -n {pkg}/.component.startup.main.MainActivity --activity-clear-top")
+    except Exception as e:
+        print(f"  !! am start 异常: {e!r}")
     time.sleep(wait)
+    if wait_disp > 0:
+        return _wait_display(wait_disp)
+    return None
 
 
 def close_app(pkg="cn.soulapp.android"):

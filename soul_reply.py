@@ -1191,7 +1191,9 @@ def _goto_chat_list():
         soul.close_kid_popup()          # ⭐ 清栈=冷启动 → 弹窗必现，必须再关一次
         # ⚠️ 2026-10-05 死循环修复：清缓存后**先确认拿到新 display 号**再继续，
         #   否则缓存已空 + dumpsys 抽风 → 定位失败拒绝点击 → 整轮导航作废。
-        if not soul.display(refresh=True):
+        #   ⭐ 2026-10-05 加固：清栈=冷启动，Soul resumed 迟现（10-15s），
+        #   3 次重试不够 → 循环等待最多 18s。
+        if not soul._wait_display(18):
             print("  !! 清栈后 display 仍定位失败 → 本清栈轮作废，等下轮重试")
             continue
         if soul.on_main() and not _on_chat_list():
