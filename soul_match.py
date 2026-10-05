@@ -308,9 +308,47 @@ def profile_opening(allow_city=False):
         got = pick_frame(COMMON_FRAMES, c, c)
         if got:
             return got
-    # ④ 只剩职业/超长标签、且共同点也无可用词 → 不硬凑（凑出来就是模板）→ 不发
-    print(f"  ⚠️ 抓不到她的个性化特征（引力签={tags} 共同点={common}）→ 不发模板开场白")
+    # ④ 只剩职业/超长标签、且共同点也无可用词 → 个性化素材耗尽。
+    #    ⚠️ 2026-10-05 用户铁律：匹配到人**必须发**（哪怕"你好"）→ 交给 fallback_opening 兜底。
+    print(f"  ⚠️ 抓不到她的个性化特征（引力签={tags} 共同点={common}）→ 走兜底基础开场白")
     return None
+
+
+# ==================== 匹配兜底开场白（用户铁律） ====================
+# ⭐ 2026-10-05 用户拍板：**只要匹配到人就必须发消息**，哪怕"你好"也行——**仅限匹配场景**。
+# 待回回复场景不受影响（soul_reply 有自己的话术池，不走这里）。
+# 兜底池刻意朴素（不替她下结论、不丢球、不油腻）；仍走 3 天去重，避免连续多人收到同一句；
+# 若 8 句 3 天内全用过 → **强制发稳定索引那句**（用户铁律优先于去重，绝不留空匹配）。
+FALLBACK_OPENINGS = (
+    "你好呀",
+    "嗨 认识一下",
+    "你好 想认识你",
+    "嗨 刚匹配到你",
+    "你好呀 交个朋友",
+    "嗨 有缘刷到你",
+    "你好 聊聊吗",
+    "嗨 你也在玩这个",
+)
+
+
+def fallback_opening(name):
+    n = len(FALLBACK_OPENINGS)
+    start = _stable_idx(name or "?", n)
+    for off in range(n):
+        fr = FALLBACK_OPENINGS[(start + off) % n]
+        if frame_used_recently(fr):
+            continue
+        try:
+            _recent_my_texts().append(fr)
+        except Exception:
+            pass
+        return fr
+    forced = FALLBACK_OPENINGS[start % n]
+    try:
+        _recent_my_texts().append(forced)
+    except Exception:
+        pass
+    return forced
 
 
 # ==================== 抢占式检查点 ====================
@@ -473,8 +511,8 @@ def match_once(opening=None, dry=False, wait_match=30):
 
     msg = opening or profile_opening(allow_city=on_ready_list(name))
     if not msg:
-        print("  ⛔ 无个性化开场白 → 本次不发（不发模板）")
-        return (name, "no_opening")
+        msg = fallback_opening(name)
+        print(f"  ⚠️ 无个性化素材 → 兜底基础开场白「{msg}」（用户铁律：匹配到人必须发）")
     from soul_send import _input, verify_sent
     _input(soul.BOX_XY, msg)
     time.sleep(0.8)
