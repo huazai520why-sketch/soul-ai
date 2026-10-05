@@ -193,6 +193,9 @@ _ADB_EXE = None
 _ADB_PORT = None
 _MUMU_SH_FAIL = {"ts": 0.0}            # mumu-cli sh 上次失败时刻
 _MUMU_SH_COOLDOWN = float(os.environ.get("SOUL_SH_FALLBACK_COOLDOWN", "60"))
+# ⭐ 2026-10-05：NemuShell 桥持续坏死（每次必超时）→ 永久直走 adb 直连。
+#   环境变量 SOUL_SKIP_MUMU_SH=0 可恢复主通道试探（排查桥恢复时用）。
+_MUMU_SH_DISABLED = os.environ.get("SOUL_SKIP_MUMU_SH", "1") != "0"
 # ⭐ 2026-10-05 补：Soul 屏 HWC 长 id 缓存（MuMu 15 的虚拟屏 id 会变动，缓存 30s 即失效重解析）
 _ADB_DISP = {"id": None, "ts": 0.0}
 _ADB_DISP_TTL = 30.0
@@ -341,7 +344,12 @@ def sh(cmd, timeout=40):
     主通道：mumu-cli sh（免端口）。2026-10-05 起增加兜底：
     主通道超时/坏死时（NemuShell 桥挂死，Windows 上连 timeout 都杀不掉），
     自动切到真实 adb 直连通道；失败后进入 60s 冷却，冷却期内直走 adb。
+    ⚠️ 2026-10-05 下午再确认：NemuShell 桥**持续坏死**（每次必超时 10s），
+    冷却期外每轮都要白等一次 10s → reply 导航整轮被拖慢/撞上 dumpsys 抽风窗口。
+    故直接禁用主通道（_MUMU_SH_DISABLED=True），永久直走 adb 直连。
     """
+    if _MUMU_SH_DISABLED:
+        return _adb_shell(cmd, timeout=timeout)
     if time.time() - _MUMU_SH_FAIL["ts"] > _MUMU_SH_COOLDOWN:
         out = _run_hard([MUMU_CLI, "sh", "-v", VMINDEX, "-c", cmd], timeout=min(timeout, 10))
         if out != "TIMEOUT":

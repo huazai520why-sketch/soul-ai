@@ -1189,6 +1189,11 @@ def _goto_chat_list():
         soul.invalidate_display()   # ⭐ 2026-10-05：清栈=重启主活动 → 可能落新虚拟屏，强制重查
         time.sleep(2.2)
         soul.close_kid_popup()          # ⭐ 清栈=冷启动 → 弹窗必现，必须再关一次
+        # ⚠️ 2026-10-05 死循环修复：清缓存后**先确认拿到新 display 号**再继续，
+        #   否则缓存已空 + dumpsys 抽风 → 定位失败拒绝点击 → 整轮导航作废。
+        if not soul.display(refresh=True):
+            print("  !! 清栈后 display 仍定位失败 → 本清栈轮作废，等下轮重试")
+            continue
         if soul.on_main() and not _on_chat_list():
             soul.tap(*CHAT_TAB)
             time.sleep(1.8)
@@ -1417,6 +1422,15 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
     #   表现成"未找到: 某某"（实测踩到）；而 Soul 被切后台时 display 检测会失败。
     #   放在最前面，任何后续定位都建立在一个干净的前台上。
     soul.ensure_ready()
+    # ⭐ 2026-10-05 治本（用户整上午卡在"发送未成功"）：MuMu 虚拟屏号漂移（6→15→21）
+    #   + dumpsys 间歇抽风 → 定位失败拒绝点击 → 导航死。这里先做 display 健康检查：
+    #   定位失败 → 自动重启 Soul 应用（换新虚拟屏）→ 再定位；仍失败 → 本轮放弃等下轮。
+    if not soul.display(refresh=True):
+        print("!! display 定位失败 → 自动重启 Soul 应用自愈")
+        soul.launch_app()          # launch_app 已清 display 缓存（2026-10-05 补丁）
+        if not soul.display(refresh=True):
+            print("!! 重启 Soul 后 display 仍无法定位 → 本轮放弃，等下轮重试")
+            return False
     # ⭐ 2026-09-29：动作前**显式打印当前页面**（用户要求「操作之前你要先看看自己在哪个页面」）
     print(f"  [页面] 操作前：{_page_state()}")
     # ⭐ 更新全局锁心跳：让"上一轮是否还在跑"判断得出来（跨实例互斥用）
