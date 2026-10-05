@@ -433,15 +433,14 @@ def _display_locate():
         m = re.search(r"Display #(\d+)", line)
         if m:
             cur = m.group(1)
+        # ⭐ 2026-10-05 治本：只认 topResumedActivity 行且包名必须带 cn.soulapp.android。
+        #   此前 "MainActivity"/"Resumed:" 宽匹配会把 Display #0（桌面）块里的
+        #   * Task{} / * Hist #0 历史记录行命中 → 拿到 0 → 点击全打桌面。
         if "cn.soulapp.android" in line and cur is not None:
-            # 必须是「当前 display 的活动记录」，且在 resumed/主活动行
-            if ("topResumedActivity" in line or "Resumed:" in line or "MainActivity" in line):
+            m2 = re.search(r"topResumedActivity=.*?cn\.soulapp\.android", line)
+            if m2:
                 d = cur
                 break
-    if d is None:
-        m = re.search(r"Display #(\d+) \(activities[^)]*\):\s*\n\s*topResumedActivity=\S+ \S+ (cn\.soulapp\.android)", out)
-        if m:
-            d = m.group(1)
     return d
 
 
