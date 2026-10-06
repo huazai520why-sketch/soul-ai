@@ -2241,7 +2241,7 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
             acted = True
             try:
                 soul.ensure_foreground()
-                soul.tap(180, y)                    # 点头像区进会话（避开名字后的❤️）
+                soul.tap(420, y)                    # 点行正文区进会话（x=180 头像区会跳进 MPSecondListActivity，不可取）
             except Exception as e:
                 log("  !! _dot_sweep tap 失败（y=%d）: %r" % (y, e))
                 _unresolved = True
