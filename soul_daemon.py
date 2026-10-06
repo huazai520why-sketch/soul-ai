@@ -100,6 +100,7 @@ LOGF   = os.path.join(OUTD, "daemon.%s.log" % VM)
 PIDF   = os.path.join(OUTD, "daemon.%s.pid" % VM)
 LOCKD  = os.path.join(OUTD, "daemon.%s.lock" % VM)   # ⭐ 独立锁文件（永不删除）
 STDOUT = os.path.join(OUTD, "stdout.%s.txt" % VM)
+_CRASH_FH = None   # ⭐ 崩溃取证：faulthandler 的文件句柄（挂模块级防被回收）
 
 HOST  = "http://192.168.10.210:11434"          # 本机 Ollama
 MODEL = "jianghua"                             # 人设模型
@@ -1722,6 +1723,118 @@ def _bell_preempt(st, where):
     return _do_love_bell(st, where=where)
 
 
+# ══════════════════ ghost 补偿（2026-10-06 用户口径）══════════════════
+# 背景：SESSION_HINT 过时导致「匹配成功却判 no_match 直接退出」的一批人**一条消息都没发**
+#   （累计 23 个）。根因已修（commit f8446a8），但**存量 ghost 必须补发**
+#   —— 项目铁律「匹配到人必须发」（见 soul_match.match_once）。
+# 判定（稳健，**不依赖 ME**，切号后 ME 陈旧也不误判）：
+#   会话存在 ∧ 全程 **0 条** msgType='1' 且 text 非空的文本消息（只带 27/35 系统卡片）∧
+#   首条消息 ≤ GHOST_DAYS 天内（更老的不复活，避免突兀）。
+# 排除：官方号/平台通知（复用 im._is_official / im._is_official_uid）。
+# 节流：每轮最多补发 1 人（绝不批量刷 23 条，防封号）；发出后该会话即有 msgType=1
+#   → 下轮判定自然不再命中，**无需额外状态文件**。
+GHOST_DAYS = 3.0
+_GHOST_SYS = ("平台通知", "Soul")     # 昵称含这些 → 平台通知/官方号，不补发
+
+
+def _ghost_cands(days=GHOST_DAYS):
+    """累积库里「匹配后从未发过开场白」的候选 [(t0, uid, name), ...]（最近优先）。
+    只读；任何异常返回 []（上层绝不因此中断）。"""
+    out = []
+    now = time.time()
+    c = sqlite3.connect("file:%s?mode=ro" % _memdb().replace("\\", "/"), uri=True, timeout=5)
+    try:
+        nicks = {str(u): n for u, n in c.execute("SELECT uid, name FROM nick")}
+        sid2uid = {str(s): str(u) for s, u in c.execute("SELECT sessionId, toUserId FROM session")}
+        rows = c.execute(
+            "SELECT sessionId, MIN(localTime) AS t0 FROM chatmsg "
+            "GROUP BY sessionId ORDER BY t0 DESC LIMIT 400").fetchall()
+        for sid, t0 in rows:
+            try:
+                t = float(t0 or 0)
+                if t > 1e12:                # localTime 有毫秒/秒两种口径
+                    t /= 1000.0
+            except Exception:
+                continue
+            if t <= 0 or (now - t) > days * 86400:
+                continue                    # 无时间 / 太老 → 不复活
+            txt = c.execute(
+                "SELECT COUNT(*) FROM chatmsg WHERE sessionId=? AND msgType='1' "
+                "AND text IS NOT NULL AND text!=''", (sid,)).fetchone()
+            if txt and int(txt[0]) > 0:
+                continue                    # 已聊过 → 不是 ghost
+            uid = sid2uid.get(str(sid), "")
+            name = str(nicks.get(uid) or "").strip()
+            if not name:
+                continue                    # 纯 uid 无昵称（平台通知常见）→ 无法定位/发送
+            if im._is_official(name) or im._is_official_uid(uid):
+                continue
+            if any(k in name for k in _GHOST_SYS):
+                continue
+            out.append((t, uid, name))
+    finally:
+        c.close()
+    return out
+
+
+def _opening_passed(txt):
+    """开场白过闸（红线/违禁/长度…）→ 返回到手句，未过返回 None。与奇遇铃同一道闸。"""
+    if not txt:
+        return None
+    try:
+        kept, dropped = gate(txt, "", 1)
+    except Exception as e:
+        log("     !! ghost 开场白过闸异常（按不过处理）: %r" % (e,))
+        return None
+    if dropped:
+        log("     · ghost 开场白被闸剔除：%s" % (dropped,))
+    return kept[0] if kept else None
+
+
+def wake_ghost(st):
+    """补发「匹配成功但从未发开场白」的 ghost 会话。每轮最多 1 人。
+    整段异常只记日志，**绝不影响主循环**。返回补发数。"""
+    try:
+        cands = _ghost_cands()
+    except Exception as e:
+        log("  !! ghost 补偿扫描异常（跳过）: %r" % (e,))
+        return 0
+    if not cands:
+        return 0
+    log("  🔎 ghost 补偿候选 %d 人（匹配后未发开场白，首条 ≤%.0f 天）" % (len(cands), GHOST_DAYS))
+    for _t0, uid, name in cands:
+        try:
+            if not _hour_budget(st):
+                log("     … 已达本小时发送上限 → ghost 补偿暂停")
+                return 0
+            if not _reachable(name):
+                continue                    # 全 emoji/不可定位 → 跳过
+            if _cooling(st, name, "wake"):
+                continue                    # 复用唤醒冷却闸
+            try:
+                import soul_match as M
+                msg = _opening_passed(M.profile_opening()) or _opening_passed(M.fallback_opening(name))
+            except Exception as e:
+                log("     !! ghost 开场白生成异常 %s: %r" % (name, e))
+                continue
+            if not msg:
+                log("     … ghost「%s」无可用开场白（未过闸）→ 跳过" % name)
+                continue
+            r = _deliver(name, [msg], allow_chain=False)
+            if r == "SENT":
+                log("  🩹 ghost 补偿：匹配后未发开场白 %d 人 → 补发 %s「%s」→ SENT"
+                    % (len(cands), name, msg))
+                _spend(st, 1)
+                return 1
+            log("     ⏭ ghost 补偿「%s」未达成（%s）→ 记一次冷却，本轮不再试" % (name, r))
+            _bump_try(st, name, "wake")
+            return 0
+        except Exception as e:
+            log("     !! ghost 补偿异常 %s: %r" % (name, e))
+            continue
+    return 0
+
+
 def wake_old(st):
     """唤醒老联系人：_follow_mem 从**累积库**选可推进的人 → 生成新话题开场"""
     fol = _follow_mem(min_msgs=10, cool_h=WAKE_MIN_H, max_idle_h=WAKE_MAX_H,
@@ -1833,24 +1946,320 @@ def _chat_nav_dot():
 
 
 def _dot_desc(state):
-    return {True: "有", False: "无", None: "判不了（不在主框架）"}.get(state, "判不了")
+    return {True: "有", False: "无", None: "判不了（不在主框架）",
+            "unresolved": "进了会话却没回成（未处理）"}.get(state, "判不了")
+
+
+def _last_her_text(sid):
+    """从正式库(im_data.db)取该会话「她」最新一条可读文本（语音取 Soul 自带转写）。
+
+    仅用于红点「进入式判定」的兜底（`im.pending()` 里按昵称匹配不到时）。
+    取不到返回 None（调用方放弃该行，**绝不瞎编**）。
+    """
+    if not sid:
+        return None
+    try:
+        c = sqlite3.connect(im.IMDB)
+        rows = c.execute("SELECT senderId, text, msgContent, msgType FROM chatmsg "
+                         "WHERE sessionId=? ORDER BY localTime DESC LIMIT 8",
+                         (str(sid),)).fetchall()
+        c.close()
+    except Exception as e:
+        log("  !! _last_her_text 查库失败: %r" % (e,))
+        return None
+    for sender, text, content, mt in rows:
+        eff = str(text).strip() if (text and str(text).strip()) else ""
+        if not eff and int(mt or 0) == im.VOICE_MT:
+            eff = im._voice_text(content)          # 语音 → 自带转写
+        if not eff or im._is_sys(eff, content):    # 系统卡片/图片/转写失败 → 不算她说话
+            continue
+        if str(sender) != str(im.ME):
+            return eff
+    return None
+
+
+# ══════════════════ 红点「进入式判定」前置守卫（M1，2026-10-06）══════════════════
+# 🔴 铁律：**宁可不动，绝不标已读不回**。tap 进会话 = 把她的消息标成已读，
+#   所以**tap 之前**必须先从 `pending()` 快照确认「这一行是可回复的真人待回」；
+#   解析不出来（系统卡片/官方号/拿不准）→ 直接跳过、**绝不 tap**，留在未读
+#   交下一轮正常 pending()→回复流程处理。
+_re_dot_time = re.compile(r"^\d{1,2}[:：]\d{2}$")     # 列表里的时间戳 14:03
+_re_dot_num = re.compile(r"^[\d\W_]+$")                # 纯数字/纯符号（未读角标等）
+
+
+def _dot_row_name(items, y):
+    """聊天列表 OCR → 红点行 y 附近的**昵称候选**（左侧列，排除时间/角标）。
+
+    只认与红点 y 同行（±60）且 x<560（右侧是时间/红点/未读，不是昵称）的文本项。"""
+    out = []
+    for t, x, yy in items:
+        s = str(t or "").strip()
+        if not s or len(s) > 20:
+            continue
+        if x > 560:
+            continue
+        if abs(yy - y) > 60:
+            continue
+        if _re_dot_time.match(s) or _re_dot_num.match(s):
+            continue
+        out.append((abs(yy - y), s))
+    out.sort(key=lambda z: z[0])
+    return [s for _, s in out]
+
+
+def _resolve_row(items, y, pend, st):
+    """前置守卫：把「红点行 y」解析成可回复的待回条目 `(name, her_text, sid)`。
+
+    只在**唯一命中**时才认（多个候选/命中多人都判失败）——宁可不回，绝不发错人。"""
+    cands = _dot_row_name(items, y)
+    if not cands:
+        return None
+    hit = []
+    for p in (pend or []):
+        try:
+            pn, pt = str(p[1] or "").strip(), str(p[3] or "").strip()
+        except Exception:
+            continue
+        if not pn or not pt:
+            continue
+        if not any(pn == c or pn in c or c in pn for c in cands):
+            continue
+        if not _reachable(pn) or _is_fake_last(pt):
+            continue
+        try:
+            if not _sendable(pn) or _cooling(st, pn, pt):
+                continue
+        except Exception:
+            pass
+        hit.append(p)
+    if len(hit) != 1:
+        return None
+    p = hit[0]
+    return (p[1], p[3], p[5])
+
+
+def _dot_sweep(st, max_rows=3, max_pages=3):
+    """红点「进入式判定」清扫（2026-10-06 用户口径 + M1 前置守卫）。
+
+      原话：「点进去如果是正常的聊天框，那就证明可以对话，正常对话就行；
+             如果不是那么返回退出。」
+
+    🔴 三个历史坑（保留本段，防止有人改回去）：
+      ① **绝不能"只进入就返回"**：tap 进会话 = 把她的消息标成**已读**。旧
+         `soul_clear_unread.main()` 把每行红点 tap 进去再 BACK —— 那是**标已读却不回**。
+         ⇒ 本函数 **tap 之前先用 `_resolve_row()` 做前置守卫**：只有这一行能从 `pending()`
+           快照解析出**可回复的真人待回**时才 tap，且 tap 后**必真回复**（复用 `do_reply`）。
+           解析不出 → 跳过、绝不 tap ⇒「已读不回」在源头不可达。
+      ② **不是正常聊天框必须能退出**：官方号页/WebView 里 BACK 不回列表 → 卡住出不来。
+         ⇒ BACK 最多 4 次，仍回不去就 `_goto_chat_list(force=True)` 清栈兜底。
+      ③ **后置兜底**：万一 tap 后身份/回复仍失败（前置守卫漏网），**绝不静默当已清** ——
+         记 warning（含会话页 OCR 原文便于取证）+ 返回 `"unresolved"`，交调用方判"未清"。
+
+    限额 max_rows=3 行 / max_pages=3 屏（防系统卡片连点把一轮拖死）。
+    返回：`False`=红点已清 ／ `True`/`None`=仍在/判不了 ／ `"unresolved"`=进了会话却没回成
+          （**调用方不得当成已清**）。
+    """
+    try:
+        import soul_clear_unread as CU
+        import soul_read as rd
+        import soul_send as S
+    except Exception as e:
+        log("  !! _dot_sweep 依赖加载失败: %r" % (e,))
+        return _chat_nav_dot()[0]
+
+    def _backs():
+        """BACK(62,131) 最多 4 次直到回到聊天列表；仍失败 → 清栈兜底。"""
+        for _i in range(4):
+            try:
+                if sr._on_chat_list():
+                    return True
+            except Exception:
+                pass
+            try:
+                soul.tap(62, 131)
+            except Exception as e:
+                log("  !! _dot_sweep BACK 失败: %r" % (e,))
+            time.sleep(1.1)
+        try:
+            if not sr._on_chat_list():
+                sr._goto_chat_list(force=True)     # 官方号页/WebView 兜底（慢但彻底）
+            return bool(sr._on_chat_list())
+        except Exception as e:
+            log("  !! _dot_sweep 兜底回聊天列表失败: %r" % (e,))
+            return False
+
+    # a. 确保在聊天列表页
+    try:
+        if not sr._on_chat_list():
+            sr._goto_chat_list()
+    except Exception as e:
+        log("  !! _dot_sweep 导航到聊天列表失败: %r" % (e,))
+    # b. 回顶（红点行才在当前屏被检到）
+    try:
+        CU.scroll_to_top()
+    except Exception as e:
+        log("  !! _dot_sweep 回顶失败: %r" % (e,))
+    # 待回快照（前置守卫按它解析身份；进 _dot_sweep 时红点=有新消息，必然该查一次）
+    try:
+        _pend_cache = im.pending()
+    except Exception as e:
+        log("  !! _dot_sweep pending() 失败: %r" % (e,))
+        _pend_cache = []
+
+    _unresolved = False        # ⭐ tap 了却没回成 → 红点没真正处理（调用方须按"未清"处理）
+    rows = 0
+    page = 0
+    while page < max_pages and rows < max_rows:
+        try:
+            if CU.nav_dot() is False:               # g. 红点已清 → 立即停
+                log("  ✅ 聊天导航红点已清 → 停止清扫")
+                break
+        except Exception as e:
+            log("  !! _dot_sweep nav_dot() 失败: %r" % (e,))
+        try:
+            soul.ensure_foreground()
+            soul.screenshot()
+        except Exception:
+            pass
+        try:
+            bs = CU.badges()
+        except Exception as e:
+            log("  !! _dot_sweep badges() 失败: %r" % (e,))
+            bs = []
+        if not bs:
+            try:
+                soul.swipe_up()
+                time.sleep(0.9)
+            except Exception:
+                pass
+            page += 1
+            continue
+        acted = False
+        for z in bs:
+            if rows >= max_rows:
+                break
+            try:
+                if CU.nav_dot() is False:           # g. 每处理一行前复查
+                    break
+            except Exception:
+                pass
+            y = int(z["y"])
+            # ── 🔴 前置守卫（tap **之前**）：解析不出「可回复的待回身份」就跳过、绝不 tap ──
+            #    ⚠️ 跳过不改列表布局 → 同屏坐标仍有效；一旦真 tap 立即 break 重截图
+            #       （坐标绝不跨"进入/返回"复用，防点到别人）。
+            try:
+                _items = rd.items()
+            except Exception as e:
+                log("  !! _dot_sweep 读屏失败: %r" % (e,))
+                _items = []
+            _pre = _resolve_row(_items, y, _pend_cache, st)
+            if not _pre:
+                log("  ⏭ 红点行 y=%d 解析不出可回复的待回身份 → 跳过（不 tap、留在未读，"
+                    "交下一轮 pending 回复流程）" % y)
+                continue
+            _pname, _ptext, _psid = _pre
+            rows += 1
+            acted = True
+            try:
+                soul.ensure_foreground()
+                soul.tap(180, y)                    # 点头像区进会话（避开名字后的❤️）
+            except Exception as e:
+                log("  !! _dot_sweep tap 失败（y=%d）: %r" % (y, e))
+                _unresolved = True
+                break
+            time.sleep(1.9)
+            # ── d. 判定「是否正常聊天框」 ──────────────────────────────
+            # 正常聊天框 = 已不在主框架 + 底部输入框一带出现「发送/发消息/按住说话/录音」
+            # 即 `_mode()` ∈ text/voice/rec（`_bottom_texts()` 已按 y>1050*DEV_H/1600 过滤）。
+            try:
+                _m = S._mode(S._bottom_texts())
+            except Exception as e:
+                log("  !! 读输入框模式失败: %r" % (e,))
+                _m = "unknown"
+            try:
+                _main = bool(soul.on_main())
+            except Exception:
+                _main = True
+            if (not _main) and _m in ("text", "voice", "rec"):
+                # e. 正常聊天框 → 用**前置守卫已确认**的身份真回复（绝不只进入就返回）
+                name, sid6 = _pname, _psid
+                # 她末句**以数据库为准**（pending 的 p[3]，或用会话 id 从正式库刷新）——
+                # 刻意**不用**全屏 OCR 猜"她最后一条气泡"：OCR 无发送者归属，猜错就会把
+                # 内容发给错的人；宁可不取（拿不到就不回复、记为未处理），绝不发错内容。
+                try:
+                    her_text = _last_her_text(sid6) or _ptext
+                except Exception:
+                    her_text = _ptext
+                try:
+                    _items2 = rd.items()
+                except Exception:
+                    _items2 = _items
+                _tops = [t for t, _x, _y in _items2 if _y < 200]
+                if name and her_text:
+                    log("  💬 红点进「%s」= 正常聊天框 → 正常对话回复：%r（标题区=%r）"
+                        % (name, str(her_text)[:24], str(_tops[:2])))
+                    try:
+                        with _Tick("红点回复·%s" % name, st):
+                            do_reply(name, her_text, st, sid_hint=sid6)
+                    except Exception as e:
+                        log("  !! _dot_sweep do_reply 异常（%s）: %r" % (name, e))
+                        _unresolved = True
+                    time.sleep(0.5)
+                    break                               # do_reply 末尾已回聊天列表
+                # 后置兜底：身份竟为空（前置守卫漏网）——**绝不当已清**，记取证信息
+                log("  ⚠ 红点进了正常聊天框却拿不到身份（前置守卫漏网）标题区=%r 全屏OCR前8=%r"
+                    " → 记为未处理（返回 unresolved）"
+                    % (str(_tops[:2]), str([t for t, _x, _y in _items2][:8])))
+                _unresolved = True
+            else:
+                # ⭐ 2026-10-07 M1 补：前置守卫已确认该行是**真人可回待回**，
+                #   tap 进会话本身就可能把她的消息标已读 → 任何「没回复」的结局
+                #   都必须记 unresolved（否则红点若因进入被消，会被当"已清"，
+                #   形成用户明令禁止的「标已读却不回」静默路径）。
+                log("  ↩ 红点进 y=%d 不是正常聊天框（mode=%s, on_main=%s）→ 记未处理"
+                    % (y, _m, _main))
+                _unresolved = True
+            try:
+                _backs()                                # f. 不是正常聊天框 → 返回退出
+            except Exception as e:
+                log("  !! _dot_sweep _backs 异常: %r" % (e,))
+                _unresolved = True
+            break
+        if acted:
+            continue                                    # 已 tap → 重新截图取最新红点
+        # 本屏没有"可回复"的红点（全是系统卡片/官方号/拿不准）→ 下翻一屏
+        try:
+            soul.swipe_up()
+            time.sleep(0.9)
+        except Exception:
+            pass
+        page += 1
+
+    if _unresolved:
+        return "unresolved"
+    try:
+        return CU.nav_dot()
+    except Exception:
+        return _chat_nav_dot()[0]
 
 
 def dot_block_match(st):
-    """匹配前的红点闸。返回 True = 本轮**不匹配**，先回去回消息。
+    """匹配前的红点闸。返回 True = 本轮**不匹配**。
 
-    ⭐ 2026-10-06 用户口径（两轮定稿）：
-      「匹配之前记得把聊天导航的红点消除完了之后再匹配」
-      「清红点**不是叫你进入返回**，是**进入然后回消息**」
+    ⭐ 2026-10-06 用户口径（**进入式判定**，取代"连判 3 轮放行"）：
+      「红点可以这样处理：点进去如果是正常的聊天框，那就证明可以对话，正常对话就行；
+        如果不是那么返回退出。」
 
-    🔴 为什么**删掉**了原来的「进入→返回」盲扫（`soul_clear_unread.main()`）：
-      ① 它把每一行红点都 tap 进去再 BACK —— 那是**把她的消息标成已读却不回**，
-         正好和"要回消息"相反；
-      ② 遇到「官方号消息」这类**特殊页**，BACK 并不回聊天列表 → 人卡在里面，
-         后面 9 屏"下翻"全空转，紧接的匹配**连续 3 次 no_planet**
-         （实测 02:23~02:27 完整复现）。
-    现在：红点 = 有新消息 → 本轮让位回消息（**回消息本身就会把红点消掉**）；
-    只有连着 DOT_BLOCK_MAX 轮都消不掉（= 系统卡片，根本回不了）才放行匹配。
+    🔴 为什么改：旧版检测到红点只做「本轮不匹配 + streak+1」，连拦 DOT_BLOCK_MAX 轮后
+       才判"系统卡片回不了"放行匹配 —— 结果是**每轮匹配前空转 3 轮**，真人新消息被反复
+       延后（实测 23:29 来的消息到 23:32 才回）。现在当轮直接 `_dot_sweep()` 进去判定：
+         · 是正常聊天框 → 当场真回复（回复本身即消红点）；
+         · 不是（官方号/系统卡片页/没进去）→ 返回退出。
+       ⭐ M1：`_dot_sweep` 只 tap「前置守卫确认可回复」的行；若出现「进了却没回成」
+         （返回 `"unresolved"`）→ **不得当成已清**，按"未见效"计 streak，交放行兜底。
+       两个历史坑见 `_dot_sweep` 注释（"只进入就返回"= 已读不回；官方号页 BACK 出不来）。
+
+    保留 `_blk >= DOT_BLOCK_MAX` 的放行兜底：防止 `_dot_sweep` 本身卡住 → 匹配被永久饿死。
     """
     state, npx = _chat_nav_dot()
     if state is not True:
@@ -1860,12 +2269,32 @@ def dot_block_match(st):
     _blk = int(st.get("dot_block_streak", 0))
     if _blk >= DOT_BLOCK_MAX:
         st["dot_block_streak"] = 0
-        log("  🔴 聊天导航红点连 %d 轮没被「回消息」消掉 → 判为系统卡片（回不了），放行匹配"
+        log("  🔴 聊天导航红点连 %d 轮没被消除 → 放行匹配（防 _dot_sweep 卡死饿死匹配）"
             % _blk)
         return False
+    # ⭐ 本轮：进入式清扫（进去判定 / 正常对话），不再是空转等 3 轮
+    log("  🔴 匹配前：聊天导航红点（红像素 %s）→ 进入式清扫（进去判定，是正常聊天框就正常对话）"
+        % npx)
+    try:
+        after = _dot_sweep(st)
+    except Exception as e:
+        # 清扫本身异常**绝不能吃掉整轮**（否则主循环 fail+1，几次就熔断暂停）：
+        # 按"没清掉"处理，走下面的 streak 计数与原放行兜底。
+        log("  !! _dot_sweep 异常（按'红点未清'处理）: %r" % (e,))
+        after = True
+    if after is False:
+        st["dot_block_streak"] = 0
+        log("  ✅ 红点已清 → 不拦，正常去匹配")
+        return False
+    if after == "unresolved":
+        # ⭐ M1：`_dot_sweep` 进了会话却没回成 → 红点可能已被误标已读，**绝不当成已清**。
+        st["dot_block_streak"] = _blk + 1
+        log("  🔴 清扫后仍有「进了会话却没回成」的未处理行 → 本轮不匹配"
+            "（第 %d/%d 次；到上限仍消不掉按系统卡片放行）" % (_blk + 1, DOT_BLOCK_MAX))
+        return True
     st["dot_block_streak"] = _blk + 1
-    log("  🔴 匹配前：聊天导航红点（红像素 %s）→ **先回去回消息**，本轮不匹配"
-        "（第 %d/%d 次；到上限仍消不掉按系统卡片放行）" % (npx, _blk + 1, DOT_BLOCK_MAX))
+    log("  🔴 清扫后红点仍在（%s）→ 本轮不匹配（第 %d/%d 次；到上限仍消不掉按系统卡片放行）"
+        % (_dot_desc(after), _blk + 1, DOT_BLOCK_MAX))
     return True
 
 
@@ -2490,7 +2919,9 @@ def _cycle(st):
                 # ⭐ 2026-10-06 用户口径（两轮定稿）：「匹配前先把聊天导航红点消除完了再匹配」
                 #   +「清红点**不是进入返回**，是**进入然后回消息**」
                 #   → 有红点 = 有新消息：本轮**不匹配**，先回去回消息（回消息本身即消红点）。
-                #   **不做任何盲扫**（盲扫=把消息标已读却不回，还会卡在官方号页出不来）。
+                #   ⭐ 进入式清扫（M1 定稿）：tap 进会话=把消息标已读，所以 `_dot_sweep`
+                #      **tap 之前先用 pending() 快照确认这行是可回复的真人待回**；解析不出就
+                #      跳过、绝不 tap ⇒「标已读却不回」在源头不可达（宁可不进，绝不盲扫）。
                 if dot_block_match(st):
                     st["fail"] = 0
                     return            # 立刻进下一轮 → 去看消息（不等 150s 空转）
@@ -2609,6 +3040,8 @@ def _cycle(st):
             if now - float(st.get("last_wake", 0)) >= _wgap:
                 log("── 无人聊 → 唤醒老联系人（与匹配并行推进）──")
                 with _Tick("唤醒老人", st):
+                    # ⭐ 2026-10-06：优先补发 ghost（匹配成功却从没发过开场白的人，每轮≤1）
+                    wake_ghost(st)
                     wake_old(st)
                 st["last_wake"] = time.time()
             else:
@@ -2763,6 +3196,23 @@ def main():
         #   解释器收尾会卡在 onnxruntime 的非守护线程上，残留成 CPU=0/4MB 空壳
         #   （00:44:59 pid=12732 两分钟不退）。os._exit 跳过线程收尾/atexit，立即终止。
         os._exit(0)
+    # ⭐ 2026-10-06 崩溃取证：23:39:44 守护在匹配途中**静默消失**（无 traceback、无日志、
+    #   Windows 事件日志也无记录），132s 后才被 guard 拉回 —— 是硬死，但**没有任何证据**，
+    #   无法定位。这里开 faulthandler：下次硬死（段错误/栈溢出/致命信号）会把**所有线程**的
+    #   Python 栈 dump 到 crash 文件。句柄挂模块级防被回收；整段失败即跳过（取证不能拖垮启动）。
+    #   必须在看门狗线程启动之前启用。
+    global _CRASH_FH
+    try:
+        import faulthandler as _fh
+        _crash = os.path.join(OUTD, "crash.%s.log" % VM)
+        _CRASH_FH = io.open(_crash, "a", encoding="utf-8", errors="replace")
+        _fh.enable(file=_CRASH_FH, all_threads=True)
+        log("[取证] faulthandler 已启用 → %s（下次硬死留现场）" % _crash)
+    except Exception as _fe:
+        try:
+            log("  (崩溃取证 faulthandler 跳过: %r)" % (_fe,))
+        except Exception:
+            pass
     # ⭐ 2026-10-04（N15）：看门狗**提前上线**，必须早于 soul.calibrate() / 预热 ——
     #   否则卡在启动阶段时看门狗线程还没创建（实测静默 80 分钟的成因）。
     import threading as _th

@@ -527,9 +527,12 @@ def partner_name():
     if not cands:
         return None
     # ① 优先设备库真名（唯一可信）
+    # ⭐ 2026-10-06 修（死代码）：im.names() 返回 `dict[uid → 昵称]`（soul_im.py `return dict(out)`），
+    #   旧写法直接迭代 dict 拿到的是 **uid**，再拿去和 OCR 出的昵称比 → 永不成立 →
+    #   这条路完全失效，一直掉到 ② y 最小兜底。改成取**昵称集合**（.values()），保持模糊匹配语义。
     try:
         import soul_im as im
-        dev = set(str(n).strip() for n in (im.names() or []) if str(n or "").strip())
+        dev = set(str(n).strip() for n in (im.names() or {}).values() if str(n or "").strip())
     except Exception:
         dev = set()
     if dev:
