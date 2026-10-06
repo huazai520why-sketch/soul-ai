@@ -384,7 +384,9 @@ def channel_ok():
        ⚠️ 本函数内**不得**调 display()（display 链路会回调这里 → 递归）。
     """
     out = sh("echo ok", timeout=6) or ""
-    ok = "ok" in out
+    # ⭐ 2026-10-06 修：子串判定太宽（输出含 "ok" 即过，可能误判 echo 出错回显/含 ok 的杂串）。
+    #   收紧为整行精确匹配。
+    ok = (out.strip() == "ok")
     _CHAN_FAIL["n"] = 0 if ok else _CHAN_FAIL["n"] + 1
     if not ok and _CHAN_FAIL["n"] == 2:
         print("!! adb 通道连续失灵 → 试 adb root 抢救")

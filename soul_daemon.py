@@ -1494,20 +1494,22 @@ def do_reply(name, her_text, st, sid_hint=None):
     if _stuck_line:
         log("   ⚠️ 死磕警报（注入提示词）：%s" % _stuck_line.replace("\n", " ｜ "))
     gated, raw, dropped = [], "", ""
+    # ⭐ 2026-10-06 修：跨轮 banned 列表（发送失败/未知过的文本指纹）两条分支都要拿到，
+    #   新对话喂给 gen_reply 的 banned 参数；老对话即使本轮不走本地 gen_reply，
+    #   也先取好（避免后续重构/回退路径漏掉）。
+    import soul_pregen as _pregen
+    try:
+        _banned_extra = list(_pregen.banned_list(name))
+    except Exception:
+        _banned_extra = []
     if _is_new:
         log("   ↳ 新对话（她说过 %d 轮 ≤ %d）→ 走本地层（预生成池 → 本地模型），不问智囊团"
             % (_her_n, NEW_ROUNDS))
         _pg = None
-        _banned_extra = []
         try:
-            import soul_pregen as _pregen
             _pg = _pregen.take(name, her_text)
         except Exception as _e:
             log("     !! 预生成池异常（%r）→ 走本地模型" % (_e,))
-        try:
-            _banned_extra = list(_pregen.banned_list(name))
-        except Exception:
-            _banned_extra = []
         if _pg:
             # ⭐ 2026-10-06（P2）：预生成命中候选先过跨轮 banned（发送失败/未知过的文本不再发）
             _pg = [c for c in _pg if _pregen._fp(c) not in set(_banned_extra)]
@@ -2176,6 +2178,26 @@ def _do_switch_account(st, tgt_uid, book, reason, force=False):
         save_state(st)
     except Exception:
         pass
+    # ⭐ 2026-10-06 修（主 bug）：同时清掉**旧号** state 文件里的三个额度/静默标记。
+    #   daemon 重启时 App 不在前台 → cur_uid() 探测失败回退主号 → 若旧号 state 还残留
+    #   quota_out_*，加载后会被随后的 save_state 传播进**新号** state 文件。
+    #   这里直接按 uid 显式读写旧号文件（不走 load_state/save_state，避免路由歧义）。
+    try:
+        _old_state_f = _acct.for_uid(OUTD, "state.%s.json" % VM, old)
+        if os.path.isfile(_old_state_f):
+            with io.open(_old_state_f, encoding="utf-8") as _f:
+                _old_st = json.load(_f) or {}
+            _dirty = False
+            for _k in ("quota_out_date", "quota_out_at", "silent_note_at"):
+                if _k in _old_st:
+                    _old_st.pop(_k, None)
+                    _dirty = True
+            if _dirty:
+                with io.open(_old_state_f, "w", encoding="utf-8") as _f:
+                    json.dump(_old_st, _f, ensure_ascii=False, indent=1)
+                log("     旧号「%s」state 残留额度标记已清" % _acct.nickname_of(old))
+    except Exception as _e:
+        log("     (旧号 state 清理异常: %r)" % (_e,))
     now = time.time()
     for uid in (old, tgt_uid):
         rec = book["acct"].setdefault(uid, {})
