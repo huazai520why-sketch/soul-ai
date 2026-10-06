@@ -2033,8 +2033,17 @@ def _row_sid(items, y):
         return None
     try:
         c = sqlite3.connect(_memdb())
-        pairs = [(str(n or "").strip(), str(u or "").strip())
-                 for u, n in c.execute("SELECT uid, name FROM nick").fetchall()]
+        # ⭐ 2026-10-07 修「红点行身份全线解析不出」：nick 表里有名字**归一化后为空**的
+        #   垃圾记录（实测 uid 499192198 名「。。。」、134486858 名「。。」，_norm_nick
+        #   把全角句号全 rstrip 掉 → ''）。空串是**任意字符串的前缀**，所以下面退一步的
+        #   子串匹配 `cn.startswith(_norm_nick(n))` 对每个候选都恒真 → 每个候选都拿到
+        #   ≥2 个假命中 → `len(hit) != 1` → 身份永远解析不出 → 红点被整片跳过。
+        #   这里在建表时就丢掉归一化后为空的名字，从源头断掉污染。
+        pairs = []
+        for u, n in c.execute("SELECT uid, name FROM nick").fetchall():
+            nn = _norm_nick(n)
+            if n and nn:
+                pairs.append((str(n or "").strip(), str(u or "").strip(), nn))
         c.close()
     except Exception as e:
         log("  !! _row_sid 读 nick 表失败: %r" % (e,))
@@ -2045,10 +2054,9 @@ def _row_sid(items, y):
         cn = _norm_nick(cand)
         if not cn:
             continue
-        hit = [u for n, u in pairs if n and _norm_nick(n) == cn]
+        hit = [u for n, u, nn in pairs if nn == cn]
         if not hit:
-            hit = [u for n, u in pairs
-                   if n and (_norm_nick(n).startswith(cn) or cn.startswith(_norm_nick(n)))]
+            hit = [u for n, u, nn in pairs if nn.startswith(cn) or cn.startswith(nn)]
         if len(hit) != 1:
             continue
         sid = _sid_of(hit[0])
@@ -2242,8 +2250,14 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                 _items = []
             _pre = _resolve_row(_items, y, _pend_cache, st)
             if not _pre:
-                log("  ⏭ 红点行 y=%d 解析不出**会话身份**（pending 无、昵称也唯一匹配不上）"
-                    "→ 跳过、绝不 tap（防进错人）" % y)
+                # ⭐ 2026-10-07：把**候选昵称**打进日志 —— 否则只看到"解析不出身份"，
+                #   不知道是哪个昵称、为何失败（不在 nick 表 / 多个命中）。
+                try:
+                    _cn = _dot_row_name(_items, y)
+                except Exception:
+                    _cn = []
+                log("  ⏭ 红点行 y=%d 解析不出**会话身份**（候选=%s）；pending 无、昵称也唯一匹配不上"
+                    "→ 跳过、绝不 tap（防进错人）" % (y, _cn))
                 continue
             _pname, _ptext, _psid = _pre
             rows += 1
