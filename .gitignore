@@ -6,6 +6,7 @@
 *.db
 *.db-wal
 *.db-shm
+*.db-journal
 *.log
 *.bak*
 *.tmp
