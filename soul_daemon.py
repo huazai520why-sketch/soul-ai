@@ -2479,6 +2479,20 @@ def do_match(st):
             _bell_hit["v"] = False
             _do_love_bell(st, where="匹配中断")
             return (0, reasons)
+        # ⭐ 2026-10-07 修：match_once 内部检测到红点返回 interrupted_by_msg / sent_pending，
+        #   但之前 do_match 只检查 _bell_hit 和 names，完全忽略了 reasons 里的红点信号，
+        #   导致红点检测到了却没人清扫，直接跳进 ghost 补偿 + 唤醒。
+        #   现在：匹配被红点中断 → 当轮直接 _dot_sweep 清扫，不拖到下一轮。
+        if "interrupted_by_msg" in reasons or "sent_pending" in reasons:
+            log("  🔴 匹配被红点中断（%s）→ 当轮清扫" % (why,))
+            try:
+                after = _dot_sweep(st)
+            except Exception as e:
+                log("  !! _dot_sweep 异常（按'红点未清'处理）: %r" % (e,))
+                after = True
+            if after is False:
+                return (0, ["dot_cleared"])
+            return (0, ["dot_pending"])
         # ⭐ 2026-10-04 用户口径（改）：没额度**不再停当天匹配**——弹层里点「去聊天」
         #   走免费出口（点它落到聊天列表，聊满一颗心 +5 次）。所以这里只清弹层，
         #   不再记「今天不匹配」的标记。
