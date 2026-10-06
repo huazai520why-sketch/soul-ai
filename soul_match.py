@@ -496,6 +496,14 @@ def to_planet():
             soul.ensure_foreground()
             continue
         break
+    # ⭐ 2026-10-07 修「未成年弹窗盖住底导航 → 连续 no_planet」（实测 04:13 三轮：
+    #   stdout_trace 里 4 次「OCR 找不到「星球」标签 → 用底导航坐标兜底」+
+    #   紧跟「检测到「未成年模式」弹窗（盖住底导航）」）。弹窗不先清掉，
+    #   底导航永远读不到「星球」→ 坐标兜底也点在弹窗上 → 白跑 100s×3。
+    try:
+        soul.close_kid_popup()
+    except Exception as _e:
+        print(f"  !! to_planet 清未成年弹窗失败: {_e!r}")
     items = rd.items()
     if any(any(k in t for k in MATCH_ENTRY) for t, _, _ in items):
         _PLANET_LAST["items"], _PLANET_LAST["ts"] = items, time.time()
