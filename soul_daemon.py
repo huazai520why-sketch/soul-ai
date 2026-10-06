@@ -333,7 +333,7 @@ def _sendable(name):
 
 def _deliver(name, texts, my_recent=None, allow_chain=False):
     """统一发送通道：快速路径优先，MISS 才回退全路径。
-    返回 "SENT"/"SKIP"(硬闸) /"FAIL"。do_reply 与 wake_old 共用。"""
+    返回 "SENT"/"SKIP"(硬闸)/"FAIL"/"UNKNOWN"(校验未知·可能已发)。do_reply 与 wake_old 共用。"""
     # ⭐ 2026-10-05 账号安全闸（放这里：do_reply 与 wake_old 两条发送路径都覆盖）
     # ⭐ 2026-10-06 force=True：发送前强制刷新身份
     if not _account_gate_ok(force=True):
@@ -341,7 +341,8 @@ def _deliver(name, texts, my_recent=None, allow_chain=False):
     if allow_chain:
         # ⭐ 2026-10-03 拆分条只走全路径（快速路径不认连发豁免）
         try:
-            return "SENT" if sr.reply(name, texts, allow_chain=True) else "FAIL"
+            r = sr.reply(name, texts, allow_chain=True)
+            return "SENT" if r is True else ("UNKNOWN" if r == "UNKNOWN" else "FAIL")
         except Exception as e:
             log("     !! 发送异常: %r" % (e,))
             return "FAIL"
@@ -362,7 +363,8 @@ def _deliver(name, texts, my_recent=None, allow_chain=False):
             return "FAIL"
         log("     … 快速路径未达成(MISS) → 回退 soul_reply 全路径")
     try:
-        return "SENT" if sr.reply(name, texts) else "FAIL"
+        r = sr.reply(name, texts)
+        return "SENT" if r is True else ("UNKNOWN" if r == "UNKNOWN" else "FAIL")
     except Exception as e:
         log("     !! 发送异常: %r" % (e,))
         return "FAIL"
@@ -1496,19 +1498,27 @@ def do_reply(name, her_text, st, sid_hint=None):
         log("   ↳ 新对话（她说过 %d 轮 ≤ %d）→ 走本地层（预生成池 → 本地模型），不问智囊团"
             % (_her_n, NEW_ROUNDS))
         _pg = None
+        _banned_extra = []
         try:
             import soul_pregen as _pregen
             _pg = _pregen.take(name, her_text)
         except Exception as _e:
             log("     !! 预生成池异常（%r）→ 走本地模型" % (_e,))
+        try:
+            _banned_extra = list(_pregen.banned_list(name))
+        except Exception:
+            _banned_extra = []
         if _pg:
+            # ⭐ 2026-10-06（P2）：预生成命中候选先过跨轮 banned（发送失败/未知过的文本不再发）
+            _pg = [c for c in _pg if _pregen._fp(c) not in set(_banned_extra)]
             gated, dropped = gate("\n".join(_pg), her_text, N_MSG, my_recent)
             log("   ⚡预生成池命中（%s）→ 闸后: %s | 剔: %s" % (name, gated, dropped))
         if not gated:
             for attempt in range(RETRY_MAX):
                 try:
                     raw, ms = gen_reply(her_text, hist, attempt=attempt,
-                                        banned=(raw.splitlines() + my_recent[-3:]),
+                                        banned=(raw.splitlines() + my_recent[-3:]
+                                                + _banned_extra),
                                         stage_line=_stage_line,
                                         stuck_line=_stuck_line)
                 except Exception as e:
@@ -1570,6 +1580,23 @@ def do_reply(name, her_text, st, sid_hint=None):
         log("     ⚡已发 %s: %s" % (name, " / ".join(_send)))
         _spend(st, 1)
         return "SENT"
+    # ⭐ 2026-10-06（P1/P2）：校验未知 = 可能已发出 → 记 banned 防重发，
+    #   **不计重试闸**（不调 _bump_try），交由下一轮 banned 过滤兜底。
+    if r == "UNKNOWN":
+        log("     ⚠️校验未知（可能已发）→ 记 banned 防重发，不计重试闸")
+        try:
+            import soul_pregen as _pregen
+            _pregen.banned_add(name, _send)
+        except Exception as _e:
+            log("     !! banned 落盘异常: %r" % (_e,))
+        return "UNKNOWN"
+    # ⭐ 2026-10-06（P2）：确认发送失败的文本记 banned（跨轮不再死磕同句）；SKIP 硬闸不写。
+    if r == "FAIL":
+        try:
+            import soul_pregen as _pregen
+            _pregen.banned_add(name, _send)
+        except Exception as _e:
+            log("     !! banned 落盘异常: %r" % (_e,))
     n = _bump_try(st, name, her_text)
     log("     %s（第 %d 次未成，计入重试闸）"
         % ("⛔硬闸拦截" if r == "SKIP" else "⚠️发送未成功", n))

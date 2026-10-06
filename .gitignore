@@ -16,6 +16,7 @@
 .soul_round_start*
 .winshot_hwnd*
 .soul_focus.json
+soul_banned*.json
 
 # ---- 其他项目的基础设施凭据/状态（非 Soul 代码） ----
 newhost_creds*

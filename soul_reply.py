@@ -1603,6 +1603,10 @@ def _goto_chat_list(force=False):
     # ⭐ 2026-10-04：4 → 2。异常期反复 `am start --activity-clear-top` 会猛敲模拟器，
     #   在画面已经不健康时形成正反馈（"越弄越死"）。画面健康闸已在 daemon 层兜底。
     for _ in range(2):
+        # ⭐ 2026-10-06（P0）：adb 通道失灵时两轮清栈纯属白烧 → 探测不通直接作废本轮导航
+        if not soul.channel_ok():
+            print("!! 通道失灵 → 本轮导航作废，交下轮")
+            break
         if _on_chat_list() and not force:
             break
         force = False               # ⭐ 2026-10-06：只强制执行一次完整清栈
@@ -1936,6 +1940,7 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
         soul.tap_back_arrow()
         return False
     sent = 0
+    _unknown = False
     # ⭐ 连发闸（2026-09-26 用户定）：**她没回复就不要发第二条**
     #   首条发出后，只有在她确实回了的情况下才允许继续发下一条；否则当场截断。
     for i, t in enumerate(texts):
@@ -1953,8 +1958,14 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
                     break
         # ⭐ 2026-09-26 修正：send_msg 抢不到发送锁会返回 False（＝不发）。
         # 旧版不检查返回值照样 db.log → 库里记了"我发过"、对方其实没收到，属静默失败。
+        # ⭐ 2026-10-06 三态化：True=已发 / False=未发 / None=校验未知（可能已发）。
         print(f"  [trace] send_msg 第{i + 1}/{len(texts)} 条开始：{str(t)[:18]}")
-        if not send_msg(t, maxlen=REPLY_MAXLEN):
+        r = send_msg(t, maxlen=REPLY_MAXLEN)
+        if r is None:
+            print(f"⚠️ 校验未知态（可能已发）→「{t}」记 banned 防重发，本轮终止")
+            _unknown = True
+            break
+        elif not r:
             print(f"!! 发送失败（长度超限 / 抢不到发送锁 / 并发实例）→「{t}」未发出，"
                   f"**本条不写库**，需人工核对后重试")
             break
@@ -1994,6 +2005,11 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
     print("已返回列表" + ("（第 %d 次返回箭头后确认）" % (_b + 1) if _back_ok and _b else ""))
     if not _back_ok:
         print("  !! 连点 4 次返回仍未回到聊天列表（%s）→ 交给下一次导航兜底" % _page_state())
+    if _unknown:
+        # ⭐ 2026-10-06（P1 三态化）：本轮出现过「校验未知（可能已发）」→ 返回 "UNKNOWN"。
+        #   daemon 收到后不计重试闸、把文本记 banned 防重发；宁沉默不冒重发风险。
+        print("  [trace] 本轮存在校验未知态 → reply() 返回 \"UNKNOWN\"")
+        return "UNKNOWN"
     if sent == 0:
         # ⭐ 2026-09-28：旧版此处照样 return True → 明明一条没发却报成功（静默失败）。
         print("!! 本次 0 条发出（长度闸 / 发送锁 / 连发闸拦截）→ 返回失败")
@@ -2075,8 +2091,15 @@ def reply_batch(pairs, verify_db=True):
             results[name] = False
             break
         sent_any = False
+        _unknown = False
         for t in texts:
-            if not send_msg(t, maxlen=REPLY_MAXLEN):   # ⭐ 抢不到发送锁/超长 → 不发也不写库
+            # ⭐ 2026-10-06 三态化：True=已发 / False=未发 / None=校验未知（可能已发）
+            r = send_msg(t, maxlen=REPLY_MAXLEN)   # ⭐ 抢不到发送锁/超长 → 不发也不写库
+            if r is None:
+                print(f"⚠️ 校验未知态（可能已发）→「{t}」防重发，本条不写库，本批此人截断")
+                _unknown = True
+                break
+            if not r:
                 print(f"!! 发送失败（抢不到发送锁）→「{t}」未发出，本条不写库")
                 break
             db.log(name, "me", t)
@@ -2086,12 +2109,12 @@ def reply_batch(pairs, verify_db=True):
             time.sleep(0.6)
         soul.tap(50, 105)               # 显式返回列表，接着回下一人（不重导航）
         time.sleep(1.8)
-        results[name] = sent_any
+        results[name] = "UNKNOWN" if _unknown else sent_any
     if verify_db:                        # 批次末统一校验一次（每人单独 pull 要 ~6s）
         time.sleep(1.0)
         im.pull()
         for name, ok in list(results.items()):
-            if ok and not _last_sender_is_me(name):
+            if ok is True and not _last_sender_is_me(name):
                 print("!! DB 校验失败:", name)
                 results[name] = False
     return results

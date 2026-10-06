@@ -153,6 +153,7 @@ def my_last_text(k=8):
     ⭐ 2026-10-06 去 ME 化：原实现 `WHERE senderId=ME` —— 切号后 im.ME 若没跟上
     设备账号，就查不到刚发的消息 → 误判「发送未成功」（消息其实已发出）。
     消息落库是既成事实，跟「我是谁」无关，直接按文本指纹查最近 k 条，绕开串号。
+    ⭐ 2026-10-06 三态化：异常 → None（库不可读=未知）；正常空读仍 → ""。
     """
     try:
         import soul_im as I
@@ -164,7 +165,7 @@ def my_last_text(k=8):
         return "".join((r[0] or "") for r in rows)
     except Exception as e:
         print(f"[warn] 校验读库异常: {e!r}")
-        return ""
+        return None
 
 
 def verify_sent(text, timeout=16):
@@ -172,18 +173,28 @@ def verify_sent(text, timeout=16):
 
     比看界面硬：界面显示"已输入"不等于发出去了；
     消息落库才是既成事实（对方那条链路才可能收到）。
+    ⭐ 2026-10-06 三态化：True=确认已发 / False=确认未发 / None=校验通道不可读（未知，可能已发）。
     """
     import soul_im as I
     key = re.sub(r"\s+", "", text)[:8]
+    unknown = 0
     for i in range(max(1, timeout // 2)):
-        I.pull()
+        try:
+            I.pull()
+        except Exception:
+            unknown += 1
         got = my_last_text()
-        if got and key and key in re.sub(r"\s+", "", got):
+        if got is None:
+            unknown += 1
+        elif got and key and key in re.sub(r"\s+", "", got):
             print(f"✅ 数据库已确认发出（第 {i+1} 次校验）")
             return True
         time.sleep(2)
+    if unknown:
+        print("!! 校验通道不可读 → 未知态（不判发送失败）")
+        return None
     recent = my_last_text()
-    print("!! 数据库未检出本条消息 —— 最近消息: %r → 视为发送失败" % (recent[:100],))
+    print("!! 数据库未检出本条消息 —— 最近消息: %r → 视为发送失败" % ((recent or "")[:100],))
     return False
 
 
@@ -220,4 +231,5 @@ if __name__ == "__main__":
         print("通过" if check_len(t) else "不通过")
     else:
         r = send_msg(t)
-        print(("已发送: " if r else "未发送: ") + t)
+        print(("已发送: " if r is True
+               else ("校验未知(可能已发): " if r is None else "未发送: ")) + t)

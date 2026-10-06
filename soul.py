@@ -111,6 +111,7 @@ def calibrate():
         #   `tap` 走的是**设备空间**，而窗口截图（MuMu 15 实测 533x948）与设备（900x1600）
         #   **不是 1:1** → 坐标被系统性算小，屏幕越往下偏得越多 → 点到底部导航、误触真人主页。
         #   改为常量回退（10-05 实测 `wm size`=900x1600）——绝不拿截图尺寸冒充设备空间。
+        print("⚠️ wm size 读不到 → 坐标系回退常量 900x1600")
         w, h = 900, 1600
     if w and h:
         DEV_W, DEV_H = int(w), int(h)
@@ -373,6 +374,24 @@ def sh(cmd, timeout=40):
     return _adb_shell(cmd, timeout=timeout)
 
 
+_CHAN_FAIL = {"n": 0}
+def channel_ok():
+    """adb 通道健康探测：echo ok 不通即判失灵（供 fail-fast）。
+
+    ⭐ 2026-10-06（P0）：通道抽风时 _wait_display 静默空等、tap 静默空点、
+       导航清栈两轮白烧 ~290s。各长循环开头先探一次，不通立即作废本轮。
+       连续 2 次失灵 → 试 `adb root` 抢救一次。
+       ⚠️ 本函数内**不得**调 display()（display 链路会回调这里 → 递归）。
+    """
+    out = sh("echo ok", timeout=6) or ""
+    ok = "ok" in out
+    _CHAN_FAIL["n"] = 0 if ok else _CHAN_FAIL["n"] + 1
+    if not ok and _CHAN_FAIL["n"] == 2:
+        print("!! adb 通道连续失灵 → 试 adb root 抢救")
+        _adb_ensure_root(force=True)
+    return ok
+
+
 def cli(*args, timeout=60):
     """直接调 mumu-cli 子命令"""
     return _run([MUMU_CLI] + [str(a) for a in args], timeout=timeout)
@@ -598,6 +617,7 @@ def tap(x, y, retry=2):
     """
     d = display()
     if d is None:
+        print("⛔ 无 display（通道疑似失灵）→ 拒点")
         return "NO_DISPLAY"
     invalidate_shot()                 # 点击必然改变界面 → 作废截图缓存
     mark_top(False)                   # 位置可能变了 → 不再相信"在顶部"
@@ -617,6 +637,7 @@ def tap(x, y, retry=2):
 def swipe(x1, y1, x2, y2, dur=400):
     d = display()
     if d is None:
+        print("⛔ 无 display（通道疑似失灵）→ 拒滑动")
         return "NO_DISPLAY"
     invalidate_shot()
     mark_top(False)
@@ -639,6 +660,7 @@ def keyevent(code, d=None):
     """⚠️ 铁律：不要用 4（返回键）。保留给 HOME 等安全键。"""
     dd = d or display()
     if dd is None:
+        print("⛔ 无 display（通道疑似失灵）→ 拒按键")
         return "NO_DISPLAY"
     return sh(f"input -d {dd} keyevent {int(code)}")
 
@@ -739,6 +761,9 @@ def _wait_display(timeout=40):
     """
     t0 = time.time()
     while time.time() - t0 < timeout:
+        if not channel_ok():
+            print("!! 通道失灵 → display 定位 fail-fast")
+            return None
         d = _display_locate()
         if d is not None:
             _DISP_CACHE["d"] = d

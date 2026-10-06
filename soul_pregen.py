@@ -22,6 +22,7 @@ import os
 import sys
 import io
 import json
+import re
 import sqlite3
 import shutil
 import time
@@ -62,22 +63,32 @@ def pool_file(date=None):
     return os.path.join(PRGEN_DIR, d + ".json")
 
 
-def _read(date):
+def _read_json(path):
+    """底层：读任意 JSON 文件，异常 → {}。"""
     try:
-        with io.open(pool_file(date), encoding="utf-8") as f:
+        with io.open(path, encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
 
 
-def _write(pool, date):
-    _mkdir()
+def _write_json(d, path):
+    """底层：写任意 JSON 文件。成功 True / 失败 False。"""
     try:
-        with io.open(pool_file(date), "w", encoding="utf-8") as f:
-            json.dump(pool, f, ensure_ascii=False, indent=1)
+        with io.open(path, "w", encoding="utf-8") as f:
+            json.dump(d, f, ensure_ascii=False, indent=1)
         return True
     except Exception:
         return False
+
+
+def _read(date):
+    return _read_json(pool_file(date))
+
+
+def _write(pool, date):
+    _mkdir()
+    return _write_json(pool, pool_file(date))
 
 
 def take(nick, her_last, date=None):
@@ -243,6 +254,42 @@ def generate(date=None, limit=POOL_MAX, dry=False):
     print("== 池写入 %s：%d/%d 人 %s"
           % (pool_file(date), len(items), len(targets), "OK" if ok else "FAIL"))
     return pool
+
+
+# ---------- 发送失败/未知 文本黑名单（跨轮记忆，按账号隔离，落盘） ----------
+
+def _banned_file():
+    """banned 名单路径 —— 按当前登录账号隔离（切号后立即换文件）。"""
+    try:
+        import soul_acct
+        return soul_acct.path(BASE, "soul_banned.json")
+    except Exception:
+        return os.path.join(BASE, "soul_banned.json")
+
+
+def _fp(t):
+    """文本指纹：去所有空白后截 24 字符（候选过滤与写入共用同一指纹）。"""
+    return re.sub(r"\s+", "", str(t or ""))[:24]
+
+
+def banned_add(nick, texts, ttl=24 * 3600, cap=50):
+    """把发送失败/校验未知的文本指纹记入 banned（24h 过期，每人最多保留 cap 条）。"""
+    d = _read_json(_banned_file())
+    e = d.setdefault(str(nick), {})
+    now = time.time()
+    for t in texts or []:
+        if _fp(t):
+            e[_fp(t)] = now
+    e = {k: v for k, v in e.items() if now - v < ttl}
+    d[str(nick)] = dict(list(e.items())[-cap:])
+    _write_json(d, _banned_file())
+
+
+def banned_list(nick):
+    """返回该昵称 24h 内有效的 banned 指纹集合（供候选过滤/入闸拼接）。"""
+    d = _read_json(_banned_file())
+    now = time.time()
+    return {k for k, v in (d.get(str(nick)) or {}).items() if now - v < 24 * 3600}
 
 
 if __name__ == "__main__":
