@@ -9,7 +9,7 @@
   IM 消息必须经过服务端（有 msgId / serverTime / 协议签名），写本地库只会让本地显示一条假消息、
   对方收不到，还会被 App 覆盖。**发送必须走 UI**——本脚本就是把 UI 流程封装成一条命令。
 """
-import sys, io, time, sqlite3, os, re
+import sys, io, time, sqlite3, os, re, shutil
 
 sys.path.insert(0, r"E:\soul")
 import soul
@@ -159,7 +159,9 @@ def set_uid_hint(uid):
     if u and u.isdigit():
         nk = None
         try:
-            nk = im.names().get(u)
+            # ⭐ 2026-10-06 统一入口：正式库被 Soul 裁掉后，权威 uid 的昵称可能只剩
+            #    累积库里有 → 用 names_all() 才拿得到，否则 _uid_of 的骨架相容判定恒败。
+            nk = im.names_all().get(u)
         except Exception:
             nk = None
         _UID_HINT["uid"], _UID_HINT["nick"] = u, nk
@@ -187,7 +189,7 @@ def _uid_of(name):
         _nk = _skeleton(name)
         if _hk and _nk and (_hk in _nk or _nk in _hk):
             return _hu
-    nm = im.names()
+    nm = im.names_all()   # ⭐ 2026-10-06 统一入口（正式库 ∪ 累积库）：正式库裁剪后仍能解析出 uid
     exact = [k for k, v in nm.items() if (v or "").strip() == name]
     if len(exact) == 1:
         return exact[0]
@@ -278,6 +280,73 @@ def _type_query(name):
     return q
 
 
+def _phrase_from_history(name, uid=None, min_len=4, max_len=12):
+    """挑一句**她发过的**原话，当「聊天记录」搜索词用。取不到返回 None。
+
+    —— 用户 2026-10-06：「搜索备注、昵称、聊天记录都可以啊，每个试一下，总有一个能找到」。
+    Soul 的搜索框确实按「聊天记录内容」匹配，所以昵称读不出来（纯 emoji/装饰符）时，
+    用**她那边的原话**去搜是最可靠的一条路。
+    规则：只取她发的真人文本（非系统/非表情），洗净为纯中英文数字，长度 min~max。
+    """
+    try:
+        p = _mem_db()
+        if not os.path.exists(p):
+            return None
+        c = sqlite3.connect(p)
+        try:
+            if not uid:
+                r = c.execute("SELECT uid FROM nick WHERE name=?", (str(name),)).fetchone()
+                uid = r[0] if r else None
+            if not uid:
+                return None
+            sids = [x[0] for x in c.execute(
+                "SELECT sessionId FROM session WHERE toUserId=?", (str(uid),))]
+            for sid in sids:
+                for (t, ct) in c.execute(
+                        "SELECT text, msgContent FROM chatmsg WHERE sessionId=? AND senderId<>? "
+                        "ORDER BY localTime DESC LIMIT 80", (sid, str(im.ME))):
+                    s = _skeleton(t)
+                    if len(s) >= min_len:
+                        return s[:max_len]
+            return None
+        finally:
+            c.close()
+    except Exception:
+        return None
+
+
+def _pick_query_candidates(name, uid=None):
+    """搜索框要**逐个试**的查询串，按优先级（用户 2026-10-06 口径）。
+
+    本环境**没有任何备注** → 实际两条路：
+      ① 昵称原样（不含 emoji 时最准，Soul 按昵称精确/前缀匹配）
+      ② 昵称**中英文数字核心**（去 emoji/装饰符，如「我的弟弟是乔治✺◟(∗❛ัᴗ❛」→「我的弟弟是乔治」）
+      ③ **聊天记录原句**（她发过的原话，昵称彻底读不出来时的最后一条路）
+    """
+    out = []
+
+    def _add(s):
+        s = (s or "").strip()
+        if s and s not in out:
+            out.append(s)
+
+    # ⚠️ 不能用 _EMOJI_RE 判断「脏」—— 实测它**漏**掉一大批装饰符：
+    #   昵称「我的弟弟是乔治✺◟(∗❛ัᴗ❛」里的 ◟(U+25DF) ∗(U+2217) ั(U+0E31) 都不在它的区间内
+    #   → 原实现会把整串原样丢进搜索框，而那串**根本输不进去**（ADBKeyboard 打不出）→ 必败。
+    #   改用「有没有 0-9A-Za-z + 汉字 之外的字符」这个客观判据。
+    raw = (name or "").strip()
+    dirty = bool(re.sub(r"[0-9A-Za-z\u4e00-\u9fff]", "", raw))
+    core = _skeleton(name)
+    if not dirty:
+        _add(raw)                                   # ① 干净昵称 → 原样最准
+    if len(core) >= 2:
+        _add(core)                                  # ② 昵称核心（去装饰符，可直接输入）
+    if dirty and len(core) < 2:
+        _add(raw)                                   # 核心太短 → 只能原样试一把
+    _add(_phrase_from_history(name, uid=uid))       # ③ 聊天记录原句（最后一条路）
+    return out
+
+
 def _title_match(target, ts):
     """本人昵称骨架 target 与会话页标题骨架 ts 是否**真的对得上**。
 
@@ -293,6 +362,12 @@ def _title_match(target, ts):
     import re as _re
     if not target or not ts:
         return False, "骨架为空"
+    # ⭐ 2026-10-06 修「标题读偏误判串台」：OCR 常把未读数/角标读成数字符号前缀
+    #   （实测「0113请勿查户口没照片」vs 库昵称「请勿查户口没照片不加V」），
+    #   先剥掉标题开头的数字/符号噪声再比，否则把本人判成串台、拒发。
+    ts = _re.sub(r"^[\d\s<>\-·•~【】\[\]()（）]+", "", ts)
+    if not ts:
+        return False, "剥噪声后标题为空"
     if ts.startswith(target):
         return True, "标题以本人昵称开头"
     if target.startswith(ts):
@@ -315,8 +390,16 @@ def _lcp(a, b):
 
 
 def _mem_db():
-    """累积库路径（只增不减）。由 soul_daemon.merge_memory() 维护。"""
-    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "soul_memory.db")
+    """累积库路径（只增不减）。由 soul_daemon.merge_memory() 维护。
+
+    ⭐ 2026-10-05：**按当前登录账号**解析（切号后立即换文件），不再写死全局名。
+    """
+    base = os.path.dirname(os.path.abspath(__file__))
+    try:
+        import soul_acct
+        return soul_acct.path(base, "soul_memory.db")
+    except Exception:
+        return os.path.join(base, "soul_memory.db")
 
 
 def _hist_uids(minn=3):
@@ -397,7 +480,9 @@ def _resolve_db_target(name):
     if not ns:
         return None
     try:
-        nm = im.names()
+        # ⭐ 2026-10-06 统一入口：Soul 裁掉正式库里的老联系人后，其昵称只剩累积库有
+        #    → 必须用 names_all()，否则 K 为空 → 「库里没有聊过且含「XXX」」→ 对真人拒发。
+        nm = im.names_all()
     except Exception as e:
         print(f"  !! 取库昵称失败: {e!r}")
         return None
@@ -576,7 +661,8 @@ def _scroll_top(max_try=25, force=False):
 #   搜索页输入框占位「搜索备注、昵称或者聊天记录」中心 (221,39)；「取消」(496,41)；
 #   搜索结果/猜你想搜每行右侧「私聊」按钮 x≈477。
 SEARCH_FRAC = {
-    "icon":   (0.8148, 0.0719),   # 聊天列表顶部栏右上角放大镜（搜索入口）
+    "bar":    (0.4470, 0.1200),   # ⭐ 2026-10-05：聊天列表**顶部内嵌搜索框**（真正的入口！）
+    "icon":   (0.8148, 0.0719),   # 旧版「右上角放大镜」—— 当前版本实测**点不到**（落在标签行）
     "input":  (0.4093, 0.0406),   # 搜索页顶部输入框
     "cancel": (0.9185, 0.0427),   # 搜索页右上角「取消」
     "priv_x": (0.8830, 0.0000),   # 搜索结果每行右侧「私聊」按钮的 x 比例
@@ -587,6 +673,144 @@ def _sf(k):
     """搜索通道比例 → 当前分辨率绝对坐标（调用时算，保证跟着 calibrate() 走）。"""
     fx, fy = SEARCH_FRAC[k]
     return (int(round(soul.DEV_W * fx)), int(round(soul.DEV_H * fy)))
+
+
+def _find_search_bar():
+    """OCR 找聊天列表**顶部的搜索框**（占位「搜索备注、昵称或者聊天记录」/
+    「搜索昵称或聊天记录」）→ 返回 (x, y)；找不到返回 None。"""
+    try:
+        for t, cx, cy in rd.items():
+            s = (t or "").strip()
+            if "搜索" in s and (("昵称" in s) or ("记录" in s) or ("备注" in s)):
+                return (cx, cy)
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_search_bar(max_try=10):
+    """确保聊天列表**顶部的搜索框**可见（用户 2026-10-06 口径，逐步照做）：
+
+      ① 先确认**底部导航在「聊天」页**
+      ② **下滑**（手指向下 = 列表内容回到顶部）
+      ③ 还找不到就**继续下滑** —— 只要到了列表顶部，搜索框一定在
+      ④ **每滑一次截图一次**（用户明确要求：不许盲滑）
+
+    返回搜索框中心 (x, y)；始终找不到返回 None（调用方再回退固定比例坐标）。
+
+    ⚠️ 2026-10-06 实测教训（8 次全败，截图 `_look2.png` 实证）：
+      仅 `soul.tap(*soul.TAB_CHAT)` **不足以**回聊天列表 ——
+      屏幕当时停在「匹配会话页 / 会话页」，**底部导航根本不可见**，
+      那一下 tap 落到了输入框上 → 全程在**错误的页面**上滑 → 搜索框永远找不到。
+      ⇒ 必须用 `_goto_chat_list()`（含 on_main 判断 + `am start --activity-clear-top`
+        兜底 + 关未成年人弹窗），它才能真正把页面摆正 + 滚到顶。
+    """
+    # ① 先把页面**真正**摆正到聊天列表（不是"假设点了 tab 就到了"）
+    try:
+        if not _on_chat_list():
+            print("    · 当前不在聊天列表（%s）→ 导航回列表" % _page_state())
+            _goto_chat_list()
+    except Exception as _e:
+        print("    · 导航回聊天列表失败: %r" % (_e,))
+    try:
+        soul.ensure_foreground()
+    except Exception:
+        pass
+    soul.screenshot(force=True)
+    hit = _find_search_bar()
+    if hit:
+        print("    · 已在聊天列表见到搜索框 = %s" % (hit,))
+        return hit
+    # ② / ③ 下滑到顶 —— **每滑一次截图一次**，把每一滑看到的内容都打出来
+    _prev_rows = None
+    _still = 0
+    for _i in range(max_try):
+        try:
+            soul.swipe(int(soul.DEV_W * 0.5), int(soul.DEV_H * 0.42),
+                       int(soul.DEV_W * 0.5), int(soul.DEV_H * 0.82), 320)
+        except Exception as _e:
+            print("    · 下滑失败: %r" % (_e,))
+        time.sleep(0.9)
+        try:
+            soul.screenshot(force=True)            # ⭐ 每滑一次截图一次（用户要求）
+        except Exception:
+            pass
+        try:
+            _rows = [t for t, _x, _y in rd.items() if t and t.strip()]
+        except Exception:
+            _rows = []
+        print("    · 下滑第 %d 次 → %s" % (_i + 1, _page_state()))
+        print("        屏幕 OCR 前 8 行 = %r" % (_rows[:8],))
+        hit = _find_search_bar()
+        if hit:
+            print("    · 下滑第 %d 次后找到搜索框 = %s" % (_i + 1, hit))
+            return hit
+        # ⭐ 2026-10-06 提速 + 忠实用户口径「**只要到顶部**就一定有搜索框」：
+        #   连续两次下滑屏幕内容**完全没变** = 已经到顶、滑不动了。
+        #   再滑下去纯属白烧（每次 ≈2s）。daemon 00:18 实证：10 次下滑 OCR 一模一样。
+        if _rows and _rows == _prev_rows:
+            _still += 1
+            if _still >= 2:
+                print("    · 连续两次下滑画面未变 → 已到列表顶部，停止下滑")
+                break
+        else:
+            _still = 0
+        _prev_rows = _rows
+    # ③ 🔴 2026-10-06 实测新增：到顶了仍然没有搜索框 → **有元素顶掉了它的位置**。
+    #   daemon 00:18 实证：`Soul奇遇铃` 横幅出现时，聊天列表顶部就是
+    #     ['00:18', '通讯录聊天', 'Soul奇遇铃', '（同城奇遇', ...]
+    #   —— 搜索框那一行（常态 y≈188）被横幅占了 → 下滑 10 次都找不到
+    #      （列表本来就在顶部，滑不动 → 每滑一次截图都一样，正是"到顶了"的证据）。
+    #   逐级复位，每级都重截图再看一次（开销从小到大）：
+    #     ① 顶部「通讯录」子标签 → 「聊天」子标签（重渲染表头，最轻）
+    #     ② 底部「聊天」tab（重置滚动位置）
+    #     ③ 完整 _goto_chat_list(force=True)（清栈重启主活动，最重但最彻底）
+    def _try_bar_again(tag):
+        try:
+            soul.screenshot(force=True)
+        except Exception:
+            pass
+        h = _find_search_bar()
+        if h:
+            print("    · 复位[%s]后找到搜索框 = %s" % (tag, h))
+        return h
+    try:
+        # 坐标按 `_diag_chatlist_A.png` 实测标定（533x948 → 900x1600，×1.688）：
+        #   顶部「通讯录」文字中心 x≈247/533 = 0.4635 ｜「聊天」x≈323/533 = 0.6060
+        #   y≈55/948 = 0.058（与 OCR 的 '通讯录聊天' 合并块 y=93/1600 一致）
+        soul.tap(int(soul.DEV_W * 0.4635), int(soul.DEV_H * 0.058))   # 顶部「通讯录」
+        time.sleep(1.0)
+        soul.tap(int(soul.DEV_W * 0.6060), int(soul.DEV_H * 0.058))   # 顶部「聊天」
+        time.sleep(1.4)
+    except Exception as _e:
+        print("    · 顶部子标签复位失败: %r" % (_e,))
+    h = _try_bar_again("顶部通讯录/聊天子标签")
+    if h:
+        return h
+    try:
+        soul.tap(*soul.TAB_CHAT)
+        time.sleep(1.4)
+    except Exception as _e:
+        print("    · 底部聊天 tab 复位失败: %r" % (_e,))
+    h = _try_bar_again("底部聊天tab")
+    if h:
+        return h
+    try:
+        print("    · 仍无搜索框 → 清栈重置页面（横幅占位，最彻底的一招）")
+        _goto_chat_list(force=True)
+    except Exception as _e:
+        print("    · 清栈重置失败: %r" % (_e,))
+    h = _try_bar_again("清栈重置")
+    if h:
+        return h
+    try:
+        soul.screenshot(force=True)
+        shutil.copy2(soul.SHOT, "E:/soul/_searchbar_fail.png")
+        print("    · 失败现场已存 E:/soul/_searchbar_fail.png")
+    except Exception:
+        pass
+    print("    !! 下滑 %d 次 + 三级复位后仍未见搜索框" % max_try)
+    return None
 
 
 def _tap_search_box():
@@ -603,7 +827,24 @@ def _tap_search_box():
         except Exception:
             pass
         pg = [t for t, _, _ in rd.items()]
-        ok = any(("取消" in t) or ("猜你想搜" in t) or ("搜索历史" in t) for t in pg)
+
+        def _has(k):
+            return any(k in (t or "") for t in pg)
+        # 🔴 2026-10-06 修「假进搜索页」（daemon 00:18 实证的误判）：
+        #   旧判据末尾有一个 `or _has("私聊")` —— **太松**。
+        #   实测 A0 的兜底 `tap(0.447,0.12)` 在搜索框被横幅顶掉时，落在一条**会话行**上，
+        #   直接进了别人的 **UserHomeActivity**（主页上有「私聊」按钮）→ 被判成
+        #   "OK 已进搜索页" → 后续对着主页清空/灌字/换词 → 白烧 ~150s。
+        #   主页/会话页都可能有「私聊」→ 这个判据必须去掉。
+        act = soul.activity() or ""
+        if ("UserHomeActivity" in act) or ("ConversationActivity" in act):
+            return False, pg[:6]           # 明确不是搜索页，直接 NG
+        ok = _has("取消") or _has("猜你想搜") or _has("搜索历史")
+        # ⭐ 2026-10-05 实测补判据：聊天列表顶部有「通讯录 / 聊天」标签行，
+        #   进了搜索页它会消失 → 「通讯录」不在 且 搜索框占位还在，即视为已进搜索页。
+        #   （原判据只认 取消/猜你想搜/搜索历史，实测这三个都没被 OCR 到 → 三个动作全判 NG。）
+        if not ok and not _has("通讯录") and (_has("搜索备注") or _has("搜索昵称")):
+            ok = True
         return ok, pg[:6]
     def _act(tag, fn):
         print("  [POAV] 意图=进入搜索页 → 动作 %s" % tag)
@@ -629,6 +870,27 @@ def _tap_search_box():
         print("    [POAV] 验证: %s | activity=%s OCR=%r" %
               ("OK 已进搜索页" if ok else "NG 未进搜索页", soul.activity() or "?", pg))
         return ok
+    # ⭐ A0（2026-10-05 实测新增，**当前版本的正确入口**）：
+    #   聊天列表**顶部就是一条内嵌搜索框**（占位「搜索备注、昵称或者聊天记录」/
+    #   「搜索昵称或聊天记录」），点它即进搜索页。比点右上角放大镜可靠得多 ——
+    #   实测右上角 (0.8148,0.0719) 在 900x1600 下落在「通讯录/聊天」标签行上，
+    #   点不到任何东西 → A1/A2/A3 连续判 NG → 所有"列表无渲染行"的人永远发不出去。
+    def _a0():
+        """用户口径（2026-10-06）：底部导航确认在「聊天」→ 下滑到顶 → 搜索框必在。
+        OCR 定位到就点它。
+
+        ⚠️ **不再瞎点**：旧版找不到时回退 `tap(0.447,0.12)`，实测那一带在会话列表里
+           就是**一条会话行** → 点进别人主页 → 被宽松判据误判成"已进搜索页"
+           → 白烧 ~150s。搜索框不是 OCR 找不到（它确实常在），而是**被横幅顶掉了**
+           （实测「Soul奇遇铃」横幅会占掉它的位置）→ `_ensure_search_bar()` 内部
+           已经做了复位重试；到这里还拿不到就**宁可不进**（fail-closed）。"""
+        soul.ensure_foreground()
+        hit = _ensure_search_bar()
+        if not hit:
+            raise RuntimeError("搜索框不可见（多被横幅顶掉，复位后仍无）→ 不瞎点，换动作")
+        soul.tap(*hit)
+    if _act("A0 列表顶部内嵌搜索框", _a0):
+        return True
     # A1：底部聊天 tab → （顶部「聊天」标签）→ 顶部栏右上角放大镜
     def _a1():
         # 回「聊天」tab（用 soul.TAB_CHAT 比例坐标；不再写死 900 空间的 (615,1585) —— 在 540x960 上已出屏）
@@ -675,7 +937,7 @@ def _tap_search_box():
     return False
 
 
-def find_by_search(name, max_cand=3):
+def find_by_search(name, max_cand=3, _q_overrides=None):
     """⭐ 2026-09-29 新增：**搜索框兜底通道**（聊天列表里没有渲染行时用）。
 
     为什么必须要有：
@@ -775,7 +1037,12 @@ def find_by_search(name, max_cand=3):
     #   中间 → 焦点没到输入框 → 清空/灌字全失效，框里残留旧词 → 永远"无结果"。
     #   现在：点**搜索页输入框正确位置**聚焦 → 清空 → click=False 灌字 → 截图验证（POAV V）。
     _SP_IN = _sf("input")           # 搜索页顶部输入框（比例坐标；540x960 实测 (221,39)）
-    _qry = _type_query(name)
+    # ⭐ 2026-10-06（用户口径：「搜索备注、昵称、聊天记录都可以啊，每个试一下，总有一个能找到」）：
+    #   查询词按优先级排队（昵称原样 → 昵称核心 → 聊天记录原句），**逐个轮试**；
+    #   这个词搜不到就递归换下一个（保持在搜索通道内，不动其它链路）。
+    if _q_overrides is None:
+        _q_overrides = _pick_query_candidates(name) or []
+    _qry = _q_overrides[0] if _q_overrides else _type_query(name)
     soul.tap(*_SP_IN)
     time.sleep(0.7)
     try:
@@ -828,18 +1095,33 @@ def find_by_search(name, max_cand=3):
             loose_rows.append((cy, t, False))
     exact_rows = sorted(set(exact_rows))
     loose_rows = sorted(set(loose_rows))
-    # ⭐ 2026-10-04：候选上限 3 → 6。实测「TeFuir」搜索命中 3 个**同名陌生人**
-    #   （uid 500445694/26259132/451352138，全部 0 条往来）→ 被拒；而真正的本人
-    #   排在第 4 行，**根本没被检查到**。多查几个候选（每个多花 ~5s，仅搜索兜底通道），
-    #   换来"同名里也能找到本人"。安全闸不变（无往来仍一律拒绝）。
-    cands = (exact_rows or loose_rows)[:max(6, max_cand)]
+    # ⭐ 2026-10-06 修「真实联系人被丢弃」（实测复现，目标「我的弟弟是乔治✺◟(∗❛ัᴗ❛」）：
+    #   搜索页结果分两组——「联系人」（**已聊过**，带「今天聊过」标记）在上，
+    #   「更多用户」（陌生人）在下。OCR 把装饰符读丢后，**下半区那个陌生人**
+    #   `我的弟弟是乔治` 归一化后**正好等于**目标昵称 → 进 exact_rows；
+    #   而**上半区真正的本人** `我的弟弟是乔治业、(`（`✺`被读成`业、`）只是 loose。
+    #   旧写法 `(exact_rows or loose_rows)` 遇到 exact 就**把 loose 整个丢掉** →
+    #   只剩陌生人 → 无历史 → 安全闸拒绝 → 本人永远发不出去。
+    #   ⇒ 改成**并集**，按屏幕 y 升序（=「联系人」组天然排在「更多用户」组前面），
+    #     逐行独立判定（exact 行看历史条数 / loose 行强制内容验证），安全强度不变。
+    _all_rows = sorted(set(exact_rows) | set(loose_rows))
+    cands = _all_rows[:max(6, max_cand)]
     loose_mode = not exact_rows
     if loose_mode and cands:
         print(f"  ⚠ 无精确命中 → 宽松子串模式（{len(cands)} 候选，全部强制内容验证）")
     if not cands:
-        print(f"  !! 搜索「{name}」无结果 → 放弃")
-        soul.tap(*_sf("cancel"))                # 取消，回列表
+        # ⭐ 2026-10-06：这个词没搜到 → **换下一个查询词重来**（每个试一下，总有一个能找到）。
+        #   顺序：昵称原样 → 昵称核心（去 emoji）→ 聊天记录原句。
+        _rest = list(_q_overrides[1:])
+        try:
+            soul.tap(*_sf("cancel"))            # 取消，回列表再重来
+        except Exception:
+            pass
         time.sleep(1.5)
+        if _rest:
+            print(f"  ↻ 搜索「{name}」用「{_qry}」无结果 → 换词重试（还剩 {len(_rest)} 个：{_rest}）")
+            return find_by_search(name, max_cand=max_cand, _q_overrides=_rest)
+        print(f"  !! 搜索「{name}」{len(_q_overrides)} 个查询词全试完仍无结果 → 放弃")
         return False
     print(f"  搜索「{name}」命中 {len(cands)} 个候选 → 逐个核对历史")
 
@@ -912,6 +1194,24 @@ def find_by_search(name, max_cand=3):
             hit = uid
             break
         print(f"    候选{i + 1}「{label}」：uid={uid} 昵称={nm2} 历史真人消息={n} 条（快照判据·可信）")
+        # ⭐ 2026-10-06 硬比对**目标权威 uid**（来自 pending 行 sessionId，`do_reply` 已
+        #   `set_uid_hint(uid)` 注入）——这是身份判定里**最硬**的一条证据，且是双向的：
+        #     · 候选 uid ≠ 目标 uid → **确定不是本人**，连点开都不用，直接跳过
+        #       （实测 01:00「意中人♑️」：搜出的 2 个「意中人」分别是 461901285 / 434308585，
+        #        真身 446415751 根本不在结果里 → 旧代码照点照验，最后才被标题闸拦下，
+        #        白烧 ~100s/人，还留下满屏误导性「串台」日志）
+        #     · 候选 uid == 目标 uid → **确定是本人**，不必再赌标题 OCR
+        #       （标题 OCR 常读空 → 旧代码把正确的人误判成串台，实测「我的弟弟是乔治…」）
+        _want = (_UID_HINT or {}).get("uid")
+        if uid and _want and str(uid) != str(_want):
+            print(f"    ⛔ 该候选 uid={uid} ≠ 目标权威 uid={_want} → **不是本人，跳过**")
+            soul.tap_back_arrow()
+            time.sleep(1.8)
+            continue
+        if uid and _want and str(uid) == str(_want):
+            print(f"    ✅ uid 与目标权威 uid 完全一致（{uid}）→ 判定为本人（最硬凭据）")
+            hit = uid
+            break
         if uid and n > 0:
             print(f"    ✅ 判定为本人（有 {n} 条往来）")
             hit = uid
@@ -958,13 +1258,30 @@ def find(name, pages=None):
     return None
 
 
-# 底导航四个 tab 的文字区（720x1280 坐标）。选中=青色，未选中=灰 —— 颜色是最可靠判据。
-_TAB_BOXES = {
-    "星球": (55, 100, 1245, 1280),
-    "广场": (230, 275, 1245, 1280),
-    "聊天": (480, 522, 1245, 1280),
-    "自己": (620, 665, 1245, 1280),
+# 底导航四个 tab 的文字区（**屏幕比例坐标**，按实测分辨率换算）。
+# 2026-10-05 修：原写死 720x1280 坐标，540x960 下缩放后 y:933-960 全白取不到色
+#   → 误判"底导航无选中态" → 导航全挂。改为比例坐标（原 720 坐标 ÷ 720/1280）。
+_TAB_BOXES_FRAC = {
+    "星球": (0.0764, 0.1389, 0.9727, 1.0000),
+    "广场": (0.3194, 0.3819, 0.9727, 1.0000),
+    "聊天": (0.6667, 0.7250, 0.9727, 1.0000),
+    "自己": (0.8611, 0.9236, 0.9727, 1.0000),
 }
+# 兼容旧引用（仅 _tab_color 内部用）
+_TAB_BOXES = {}
+
+
+def _tab_box(name):
+    """按当前截图分辨率换算 tab 取样框（比例 → 像素）。"""
+    if name in _TAB_BOXES:
+        return _TAB_BOXES[name]
+    fx0, fx1, fy0, fy1 = _TAB_BOXES_FRAC[name]
+    from PIL import Image
+    im = Image.open(soul.SHOT)
+    W, H = im.size
+    box = (int(W * fx0), int(W * fx1), int(H * fy0), int(H * fy1))
+    _TAB_BOXES[name] = box
+    return box
 # 底导航「聊天」tab 点击坐标（切 tab 用；不能用来回顶，双击回顶在这台 MuMu 不生效）
 # ⚠️ 2026-09-30 修：原先这里**自己存了一份** 501,1263（720 时代的数），跟 soul.TAB_CHAT 脱节
 #   → _goto_chat_list() 点"回聊天列表"时落到信息流行上 → 反复进别人主页、整轮"无法回到聊天列表"。
@@ -982,14 +1299,12 @@ def _tab_color(name):
     """
     try:
         from PIL import Image
-        x0, x1, y0, y1 = _TAB_BOXES[name]
+        x0, x1, y0, y1 = _tab_box(name)
         im = Image.open(soul.SHOT).convert("RGB")
-        W, H = im.size
-        sx, sy = W / 720.0, H / 1280.0
         px = im.load()
         acc = []
-        for y in range(int(y0 * sy), int(y1 * sy)):
-            for x in range(int(x0 * sx), int(x1 * sx)):
+        for y in range(y0, y1):
+            for x in range(x0, x1):
                 r, g, b = px[x, y]
                 if r > 235 and g > 235 and b > 235:
                     continue                      # 跳过白底
@@ -1066,21 +1381,44 @@ def _on_session_of(name):
         # ⭐ 2026-09-29 补漏：原来只要"标题含 name"就放行 → 目标「初见」时
         #   「若只如初见」的标题也含「初见」→ 闸门放行，消息发错人（真实事故）。
         #   现在：标题里**优先找精确相等**；否则若命中的标题是**库里另一个人的精确昵称** → 判失败。
-        titles = [_norm_name(t) for t, _, cy in items if cy < 200 and (name in t)]
+        # ⭐ 2026-10-06 修「标题读偏/读空误判串台」：顶部 200px 里混着时间「4分钟前」、
+        #   按钮「关注」、标签「处女座」等噪声。旧版只认 `name in t`（读偏就漏）或把全部
+        #   文本拼起来做骨架比对（噪声前缀含中文 → 被误判成"另一个人"）。改为**逐个顶部元素**
+        #   做骨架比对（元素级、不拼接），既宽容读偏，又保留「前缀含中文→拒绝」防串台。
         nm_want = _norm_name(name)
-        if nm_want in titles:
-            title_hit = True
-        else:
-            # 🔴 2026-09-29 修 fail-open：旧判据是"标题没命中库里别人的**完整**昵称就放行"。
-            #    实测事故：目标「心中藏」，标题「心中藏山海～在线」——它不是任何库昵称的**全串**，
-            #    于是被当成"OCR 噪声"放行 → 消息发给了陌生人「心中藏山海～」。
-            #    现在必须**正面证明**：标题骨架 ⊇ 或 ⊆ 「库里聊过的本人昵称」骨架。
+        nm_core = _skeleton(name)
+        title_hit = False
+        _why = "标题无候选"
+        for t, _, cy in items:
+            if cy >= 200:
+                continue
+            if nm_want == _norm_name(t):
+                title_hit = True
+                break
+            t_core = _skeleton(t)
+            if not t_core:
+                continue
+            _ok, _w = _title_match(nm_core, t_core)
+            if _ok:
+                title_hit = True
+                break
+            _why = _w
+        if not title_hit:
+            # 用库昵称骨架再逐个元素试一轮（读偏到只剩库昵称前缀时命中）
             tgt = _resolve_db_target(name)
-            tsk = _skeleton(" ".join(titles))
-            _ok, _why = _title_match(tgt, tsk) if (tgt and tsk) else (False, "")
-            title_hit = _ok
+            for t, _, cy in items:
+                if cy >= 200:
+                    continue
+                t_core = _skeleton(t)
+                if not t_core:
+                    continue
+                _ok, _w = _title_match(tgt, t_core)
+                if _ok:
+                    title_hit = True
+                    break
+                _why = _w
             if not title_hit:
-                print(f"    ⛔ 顶部标题「{titles}」证明不了是「{name}」（库里本人={tgt}）→ 判为串台")
+                print(f"    ⛔ 顶部标题证明不了是「{name}」（库里本人={tgt}，{_why}）→ 判为串台")
         if (not ok_bar) and title_hit:
             return True
         if i == 0:
@@ -1093,14 +1431,19 @@ def _on_session_of(name):
     #   现在：标题证不了时，改用**会话内容探针**做正面证据。
     #   ⚠️ 探针必须命中（fail-closed），所以**没有放宽**防串台强度：
     #     屏幕上必须真实出现该会话的原话，否则照样拒绝。
-    try:
-        _ok_c, _why_c = _verify_by_content(name)
-        if _ok_c:
-            print(f"    · 顶部标题读不到 → 改用会话内容探针判定本人：{_why_c}")
-            return True
-        print(f"    · 内容探针也未通过（{_why_c}）")
-    except Exception as _e:
-        print(f"    · 内容探针异常（按不通过处理）: {_e!r}")
+    # ⭐ 2026-10-06 修（P1#6 防串台闸误放行）：内容探针**只在「无底导航」时**才允许放行。
+    #   有底导航（星球+广场+聊天 三 tab 都在）= 此刻根本不在会话页（在主框架/信息流），
+    #   顶多是她的话恰好出现在**别人**的信息流里 → 探针会误命中 → 闸门误放行 → 串台。
+    #   会话页 ok_bar 恒为 False，探针在会话页仍照常生效，防串台强度不降。
+    if not ok_bar:
+        try:
+            _ok_c, _why_c = _verify_by_content(name)
+            if _ok_c:
+                print(f"    · 顶部标题读不到 → 改用会话内容探针判定本人：{_why_c}")
+                return True
+            print(f"    · 内容探针也未通过（{_why_c}）")
+        except Exception as _e:
+            print(f"    · 内容探针异常（按不通过处理）: {_e!r}")
     return False
 
 
@@ -1128,6 +1471,50 @@ def verify_sent(name):
     c.close()
     # 最近 3 条内有我发的（且是非空文本）即认定发送成功
     return any(str(r[0]) == im.ME and r[1] for r in rows)
+
+
+def _sent_by_text(texts, k=8, min_key=3):
+    """⭐ 2026-10-06 新增：昵称解析不出唯一 uid 时，用**文本指纹**证明「本条真的落库」。
+
+    🔴 为什么要它（2026-10-06 00:45 实测 · 用户质疑「有人没回复」的真凶之一）：
+      `verify_sent(name)` 走 `_uid_of(name)`。当昵称**在库里有多人精确同名**
+      （实测「匆匆那年」有 uid=447837591 / 67323979 两个），`_uid_of` 按防串台铁律
+      **拒绝猜 uid → 返回 None → verify_sent 直接 return False**。
+      可实际上 `soul_send.send_msg` 已经按**文本指纹**在 IM 库里确认过本条落地，
+      并打印了 `✅ 数据库已确认发出（第 1 次校验）`（该函数查的是
+      `chatmsg WHERE senderId=我 ORDER BY localTime DESC LIMIT 1`，与昵称无关，硬证据）。
+      ⇒ 同一件事，两条校验给出**相反**结论：发送侧说成功、复核侧说失败。
+      后果：daemon 记 `⚠️发送未成功` → `_bump_try` 累加 → 6 次后 `_abandoned()`
+      判「结构性发不出去」→ 停手转人工；而人其实**早就收到了**。纯假阴性。
+
+    判据：我最近 k 条真人文本里，能否找到本次发出文本的 8 字指纹（去空白后包含）。
+    仅当 `verify_sent(name)` 已失败时才启用 —— **只加强不削弱**：
+      · 指纹必须真的出现在「我发的」消息里（不是她的、不是全库）；
+      · 文本太短（<3 字）不给判据，宁可不通过（防「哦」「嗯」误命中）。
+    """
+    keys = []
+    for t in (texts or []):
+        key = re.sub(r"\s+", "", str(t))
+        if len(key) >= min_key:
+            keys.append(key[:8])
+    if not keys:
+        return False
+    try:
+        im.pull()
+        c = sqlite3.connect(im.IMDB)
+        rows = c.execute(
+            "SELECT text FROM chatmsg WHERE text IS NOT NULL AND text!='' "
+            "ORDER BY localTime DESC LIMIT ?", (k,)).fetchall()
+        c.close()
+    except Exception as e:
+        print(f"  !! 文本指纹确认读库失败: {e!r}")
+        return False
+    mine = re.sub(r"\s+", "", "".join((r[0] or "") for r in rows))
+    for key in keys:
+        if key in mine:
+            print(f"  · 文本指纹命中「{key}」（我最近 {k} 条内）→ 本条确实已落 IM 库")
+            return True
+    return False
 
 
 def _last_msg(name):
@@ -1161,7 +1548,7 @@ def _last_msg(name):
     return None
 
 
-def _goto_chat_list():
+def _goto_chat_list(force=False):
     """导航回**聊天列表页**并滚到顶部（动作前先把页面摆正）。
 
     ⭐ 2026-09-29 加固（用户指点根因）：旧版只 `am start --activity-clear-top`
@@ -1171,6 +1558,10 @@ def _goto_chat_list():
       ① 已在主框架 → 直接点底导航「聊天」tab 纠正（快、准、不动会话栈）
       ② 仍不在（陷在会话页/WebView）→ 再 clear-top 清栈，回来后补点一次「聊天」tab
     返回 True = 确认已在聊天列表页。
+
+    ⭐ 2026-10-06 新增 `force=True`：**即使已经在聊天列表，也强制执行一次 clear-top**。
+      用途：聊天列表顶部被横幅（实测「Soul奇遇铃」）占掉了搜索框 → 需要一次真正的
+      页面重建才能复原。仅在"搜索框怎么都找不到"的兜底路径上调用（慢但彻底）。
     """
     # ⓪ 「未成年模式」弹窗：每次冷启动/清栈后必弹，盖住底导航 → 先清障
     #   （2026-09-29 根治：此前它导致 _on_chat_list() 误判"页面异常"，reply 全跳过）
@@ -1178,14 +1569,43 @@ def _goto_chat_list():
     # ① 主框架内纠 tab
     if soul.on_main() and not _on_chat_list():
         print(f"  [debug] ①tap前缓存={soul._DISP_CACHE}")
+        # ⭐ 2026-10-05 20:25 治本：MuMu 虚拟屏号漂移（2→6→11/12→3），
+        #   120s 缓存内的旧 display 号已失效 → tap 打到无效屏 → 页面纹丝不动 →
+        #   等 resumed 40s 超时 → 整轮导航作废（20:06/20:11 两次同模式失败实证）。
+        #   导航 tap 是链路命门 → 每次这里强制重查 display（约 0.5-2s），用最新号。
+        soul.display(refresh=True)
         soul.tap(*CHAT_TAB)
         time.sleep(1.8)
+    # ①.5 ⭐ 2026-10-06：Soul 在前台但**不在主框架**时，先用**返回键**退出子页。
+    #   实测子页=搜索页(RnContainerActivity)/会话页 —— 走清栈要 `am start` + 等 display
+    #   （18~40s，还会撞上 MuMu 抽风），而**返回键 1~2 次约 1~2.4s** 就回列表。
+    #   背景（01:00 实测）：`reply()` 的**提前返回**路径（未找到 / 串台拦截）没走"退到列表"
+    #   循环 → 上一次回复把人留在搜索页 → 下一次 reply 直接撞上清栈大流程。
+    if not _on_chat_list():
+        _a0 = soul.activity() or ""
+        # ⭐ 2026-10-06 修「导航死循环」：旧判断 `"soulapp" in _a0` 把 MainActivity
+        #   （主框架，包名也含 cn.soulapp…）也当成"子页"→ 在星球 tab 时误按返回键把
+        #   Soul 退出去，再被 ② 清栈拉回 → 反复横跳死循环（实测 16:45 卡 7 分钟）。
+        #   改：只在**真子页**（非 MainActivity，即 RnContainer/Conversation 等）才按返回键；
+        #   主框架停在星球/广场 tab 交给 ② 清栈+补点聊天 tab 处理。
+        if _a0 and "soulapp" in _a0.lower() and "MainActivity" not in _a0:
+            for _bn in range(3):
+                print(f"  · 在 {_a0.split('.')[-1]}（非主框架）→ 试第 {_bn + 1} 次返回键退回")
+                soul.tap_back_arrow()
+                time.sleep(1.3)
+                if _on_chat_list():
+                    print("  · 返回键已回到聊天列表（省掉一次清栈）")
+                    break
+                _a0 = soul.activity() or ""
+                if "soulapp" not in _a0.lower():
+                    break              # 已掉出 Soul（桌面等）→ 交给下面的清栈兜底
     # ② 还不行 → 清栈重启主活动，再补点「聊天」tab
     # ⭐ 2026-10-04：4 → 2。异常期反复 `am start --activity-clear-top` 会猛敲模拟器，
     #   在画面已经不健康时形成正反馈（"越弄越死"）。画面健康闸已在 daemon 层兜底。
     for _ in range(2):
-        if _on_chat_list():
+        if _on_chat_list() and not force:
             break
+        force = False               # ⭐ 2026-10-06：只强制执行一次完整清栈
         soul.adb("shell", "am", "start", "-n", ACT, "--activity-clear-top")
         soul.invalidate_display()   # ⭐ 2026-10-05：清栈=重启主活动 → 可能落新虚拟屏，强制重查
         time.sleep(2.2)
@@ -1195,8 +1615,16 @@ def _goto_chat_list():
         #   ⭐ 2026-10-05 加固：清栈=冷启动，Soul resumed 迟现（10-15s），
         #   3 次重试不够 → 循环等待最多 18s。
         if not soul._wait_display(18):
-            print("  !! 清栈后 display 仍定位失败 → 本清栈轮作废，等下轮重试")
-            continue
+            # ⭐ 2026-10-06 收敛：旧版此处 `continue` → 本循环再来一次 `am start` + `_wait_display(40)`
+            #   → 一轮导航最坏白烧 **80s**（实测 00:45 杨三岁 282s、00:16 我的弟弟是乔治 280s）。
+            #   `_wait_display` 15 次连败 = 那 40s 内**根本没有 Soul 窗口**（Soul 被顶到后台/未起来），
+            #   再等也不会自己好 → 必须**主动救**：显式重启 App 一次（launch_app 内含 am start +
+            #   等 18s）。仍不行就 break，交回本轮/下轮重试，绝不在这里连烧两个 40s。
+            print("  !! 清栈后 18s 定位不到 Soul（无 Soul 窗口）→ 显式重启 App 再试一次")
+            if not soul.launch_app(wait=4, wait_disp=18):
+                print("  !! 重启 App 后仍定位不到 display → 本清栈轮作废，等下轮重试")
+                break
+            print("  · 重启 App 后 display=%s → 继续导航" % soul._DISP_CACHE.get("d"))
         if soul.on_main() and not _on_chat_list():
             soul.tap(*CHAT_TAB)
             time.sleep(1.8)
@@ -1300,57 +1728,22 @@ def _topic_stuck_warn(name, texts, lookback=3, min_hits=3):
     if len(pool) < min_hits:
         return None
 
-    # ⚠️ 锚点词必须排除在"死磕"统计之外：零锚点 30 人是长期欠账，
-    #    转向时**本来就要反复给重庆细节**，把「重庆」当死磕会误伤补锚点策略。
-    # ⭐ 2026-10-04 双开：锚点按实例取（实例0 与现网逐字一致；实例>0 = 账号2 城市锚点）
+    # ⭐ 2026-10-06 单一数据源：锚点词 / 虚词表 / 取词 / 判热的**唯一实现**已迁到 `soul_rules`
+    #   （`_anchors` / `stuck_words` / `stuck_hot` / `stuck_line`，见该文件末尾）。
+    #   同一份代码现在同时服务于两处：
+    #     ① 本函数 —— 发送侧告警，**继续保留「只告警不阻断」的老规矩**（2026-09-29 定的）；
+    #     ② `soul_daemon._stuck_line_of()` —— **生成侧**把实测出的死磕词直写进提示词
+    #        （2026-10-06 用户批准，把「白跑」的检测变成准硬约束）。
+    #   上面这些表原先在本函数里手抄一份，与 soul_rules 并存 → 改一边必漏一边。
+
     try:
-        from soul_persona import anchors as _anchors
-        ANCHOR = _anchors()
+        import soul_rules as _R
+        hot = _R.stuck_hot(pool, min_hits=min_hits)
     except Exception:
-        ANCHOR = {"重庆", "小面", "火锅", "南山", "渝中", "解放碑", "洪崖洞",
-                  "鹅岭", "山城", "綦江", "江边", "巷子", "龙门阵",
-                  "南滨路", "轻轨", "凉虾", "十八梯", "朝天门", "观音桥", "磁器口",
-                  "坡", "梯坎", "江风", "老楼"}
-    # 🔴 单字也要一并排除：words() 会把「重庆」拆出「重」「庆」两枚单字，
-    #    只排除双字词 → 实测「重」×3、「庆」×3 照样报死磕（本轮 请勿查户口/风止遇你 均误报）。
-    ANCHOR_CHARS = set("".join(ANCHOR))
-
-    # 虚词/高频字：只统计它们没有意义（"的""了"会出现在每一条里）
-    STOP = set("的了是我在有和就都很也要去个没这那你我他好不啊哦嗯呢吧嘛哈行对说"
-               "天时侯候会能还又才真太最什么点些上下里来回做过"
-               "一二三四五六七八九十百千万两几多少半"
-               "早夜晚今明昨年月日周点钟分")
-    # ↑ 前两行是实测噪声：初见「稀饭还得煮几天」被报「天」×3（来自"明天/几天"），
-    #   这类时间量词出现在几乎每条消息里，当话题词会**误报**。
-    # ↑ 第三行（2026-09-29 21:40 轮补）：数词/量词同样遍地都是——
-    #   实测「我就住坡上 上下班腿比健身房狠」被报「一」×3（来自"一晚/一趟"），纯噪声。
-    def words(s):
-        """话题词 = 2-gram + 单个实词字。
-
-        ⚠️ 只取 2-gram 会漏掉单字话题（实测「蛋」在「四个蛋」「鸡蛋」里都是单字出现，
-        2-gram 抓不到 → 死磕告警形同虚设）。所以补单字，但用 STOP 滤掉虚词噪声。
-        """
-        out = []
-        for seg in re.findall(r"[\u4e00-\u9fa5]+", str(s)):
-            for i in range(len(seg) - 1):
-                out.append(seg[i:i + 2])
-            for ch in seg:
-                if ch not in STOP and ch not in ANCHOR_CHARS:
-                    out.append(ch)
-        return set(out)
-
-    from collections import Counter
-    cnt = Counter()
-    for t in pool:
-        for w in words(t):
-            cnt[w] += 1
-    # ⚠️ 锚点词必须排除在"死磕"统计之外：零锚点 30 人是长期欠账，
-    #    转向时**本来就要反复给重庆细节**，把「重庆」当死磕会误伤补锚点策略。
-    hot = [(w, n) for w, n in cnt.items() if n >= min_hits and w not in ANCHOR]
+        hot = []
     if not hot:
         return None
-    # 双字词比单字更有信息量（「蛋」×3 不如「鸡蛋」×3 直观），同频次优先展示双字
-    hot.sort(key=lambda x: (-x[1], -(len(x[0]) == 2)))
+    # 双字词比单字更有信息量（「蛋」×3 不如「鸡蛋」×3 直观），`stuck_hot` 已按此规则排好序。
     top = "、".join(f"「{w}」×{n}" for w, n in hot[:3])
     return (f"我在「{name}」最近 {len(pool)} 条里反复提到 {top} "
             f"—— 同一个话题已经聊了 {len(mine)} 轮，该转向了")
@@ -1425,6 +1818,10 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
     #   表现成"未找到: 某某"（实测踩到）；而 Soul 被切后台时 display 检测会失败。
     #   放在最前面，任何后续定位都建立在一个干净的前台上。
     soul.ensure_ready()
+    # ⭐ 2026-10-06 **撤回**上一版加在这里的 `soul.ensure_replyable()`：
+    #   它在入口就按返回退出「搜索页 / 用户主页」→ 把**奇遇铃刚点开的私聊入口自己关掉**。
+    #   实测 14:35「奇遇铃→点立即私聊(锦鲤泡泡机)」→ 2.5 分钟后「快速路径 MISS → 回退全路径」，
+    #   根因就是这里。自救改放到下面「确实定位不到人」之后。
     # ⭐ 2026-10-05 治本（用户整上午卡在"发送未成功"）：MuMu 虚拟屏号漂移（6→15→21）
     #   + dumpsys 间歇抽风 → 定位失败拒绝点击 → 导航死。这里先做 display 健康检查：
     #   定位失败 → 自动重启 Soul 应用（换新虚拟屏）→ 再定位；仍失败 → 本轮放弃等下轮。
@@ -1482,40 +1879,56 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
     except Exception as _e:
         print(f"⚠️ 死磕检测异常（不影响发送）：{type(_e).__name__}: {_e}")
     # 双守卫：既要在聊天列表页（底导航 + 搜索框），又要确是主框架 Activity（非 WebView/广场杂页）
-    if not _on_chat_list() or not soul.on_main():
-        print(f"  [页面] 不在聊天列表 → 导航中…")
-        _goto_chat_list()
-        # 二次确认：若仍不在，再救一次
-        if not _on_chat_list():
-            print("!! 页面异常，重试导航")
-            _goto_chat_list()
-        print(f"  [页面] 导航后：{_page_state()}")
-        if not _on_chat_list():
-            print(f"!! 无法回到聊天列表页（当前：{_page_state()}）→ 本次不发，「{name}」跳过")
-            return False
-    print(f"  [trace] find({name}) 开始（列表扫描+滚顶，最坏 40s+）")
-    pos = find(name)
-    if not pos:
-        # ⭐ 2026-09-29：列表里没有渲染行（末条是卡片/图/语音的会话不渲染）→ 走搜索框兜底
-        print(f"  [trace] find() 未命中 → 改走搜索框通道")
-        print(f"  「{name}」在聊天列表里没有渲染行 → 改走搜索框通道")
-        if not find_by_search(name):
-            print("!! 未找到:", name)
-            return False
+    # ⭐ 2026-10-06（用户：「找人 → 搜索 → 点私聊 → 进了私聊不发消息直接退出」）：
+    #   奇遇铃这条路**本来就已经在她的会话页里**了（`accept_love_bell` 点完「立即私聊」
+    #   就直接调 `_deliver`）。而下面的逻辑强制「先回聊天列表 → find(name) → 点进会话」，
+    #   于是把刚打开的私聊退回去、绕一大圈还找不到人 → 只发不出。
+    #   所以：**先判是不是已经在她的会话页**，是就直接发，不走列表导航。
+    if _on_session_of(name):
+        print(f"  [页面] 已在「{name}」的会话页 → 直接发，不再回聊天列表绕")
+        # ⭐ 已在她的会话页 → **不能再 find(name)**：聊天列表里根本没有她的行，
+        #   find 会空跑 40s 滚顶、再走搜索框、最后报「未找到」→ 奇遇铃永远发不出去。
     else:
-        print("进入会话:", name, pos)
-        # ⭐ 2026-09-29 新增护栏（真实事故后加）：
-        #   误触事故：某次 tap 时页面其实**已经不是聊天列表**（列表已滚动/页面已切换），
-        #   行坐标 (x,y) 落在了**会话页顶部的「关注后可邀请通话」按钮**上 →
-        #   Soul 以我的名义发出 messageType="follow_and_invite_call" 的通话邀请卡，
-        #   对方看到后问「你给我打语音了？」（真实发生，2026-09-29 02:29，对象：委委佗佗）。
-        #   原有 _on_session_of 只能拦住"发错人"，拦不住"点错按钮"这种**点击副作用**。
-        #   → 点行坐标之前，再确认一次"我还在聊天列表页"；不在就放弃本次（不进 UI）。
-        if not _on_chat_list():
-            print("!! 点行前页面已变（不在聊天列表页）→ 中止本次点击，避免误触会话页按钮")
-            return False
-        soul.tap(*pos)
-        time.sleep(2.5)
+        if not _on_chat_list() or not soul.on_main():
+            print(f"  [页面] 不在聊天列表 → 导航中…")
+            _goto_chat_list()
+            # 二次确认：若仍不在，再救一次
+            if not _on_chat_list():
+                print("!! 页面异常，重试导航")
+                _goto_chat_list()
+            print(f"  [页面] 导航后：{_page_state()}")
+            if not _on_chat_list():
+                # ⭐ 自救放这里（不是入口）：确实回不到聊天列表时，才把 RN 子页退掉再试一次。
+                #   入口就退会把奇遇铃刚开的私聊关掉（14:35 实测踩过）。
+                print("!! 回不到聊天列表 → 尝试退出 Soul 子页后再导航一次")
+                if soul.ensure_replyable():
+                    _goto_chat_list()
+                if not _on_chat_list():
+                    print(f"!! 无法回到聊天列表页（当前：{_page_state()}）→ 本次不发，「{name}」跳过")
+                    return False
+        print(f"  [trace] find({name}) 开始（列表扫描+滚顶，最坏 40s+）")
+        pos = find(name)
+        if not pos:
+            # ⭐ 2026-09-29：列表里没有渲染行（末条是卡片/图/语音的会话不渲染）→ 走搜索框兜底
+            print(f"  [trace] find() 未命中 → 改走搜索框通道")
+            print(f"  「{name}」在聊天列表里没有渲染行 → 改走搜索框通道")
+            if not find_by_search(name):
+                print("!! 未找到:", name)
+                return False
+        else:
+            print("进入会话:", name, pos)
+            # ⭐ 2026-09-29 新增护栏（真实事故后加）：
+            #   误触事故：某次 tap 时页面其实**已经不是聊天列表**（列表已滚动/页面已切换），
+            #   行坐标 (x,y) 落在了**会话页顶部的「关注后可邀请通话」按钮**上 →
+            #   Soul 以我的名义发出 messageType="follow_and_invite_call" 的通话邀请卡，
+            #   对方看到后问「你给我打语音了？」（真实发生，2026-09-29 02:29，对象：委委佗佗）。
+            #   原有 _on_session_of 只能拦住"发错人"，拦不住"点错按钮"这种**点击副作用**。
+            #   → 点行坐标之前，再确认一次"我还在聊天列表页"；不在就放弃本次（不进 UI）。
+            if not _on_chat_list():
+                print("!! 点行前页面已变（不在聊天列表页）→ 中止本次点击，避免误触会话页按钮")
+                return False
+            soul.tap(*pos)
+            time.sleep(2.5)
     # ⭐ 防串台硬闸：点进去后必须确认标题就是目标人，否则中止（绝不盲发）
     if not _on_session_of(name):
         print(f"!! 串台拦截：点击后未进入「{name}」会话，已中止发送"
@@ -1565,8 +1978,22 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
             print("？拉库后没读到该会话，请人工核对是否真发出")
 
     time.sleep(0.8)
-    soul.tap_back_arrow()
-    print("已返回列表")
+    # ⭐ 2026-10-06 修复「发完一次返回 ≠ 回到聊天列表」（实测每次回复白烧 40~80s 的根因）：
+    #   走搜索通道发送时，页面栈是「聊天列表 → 搜索页(RnContainer) → 她的会话(还是 RnContainer)」。
+    #   只点**一次**返回箭头 → 退回的是**搜索结果页**（仍是 RnContainerActivity，非 MainActivity）
+    #   → 下一次 reply 开头 `_on_chat_list()` 判 False → 走 `_goto_chat_list()` 清栈兜底
+    #   → `am start --clear-top` + `_wait_display(40)` 极易撞上 MuMu 抽风 → 40s 白等（实测 00:42/00:45 两次）。
+    #   现在：连续返回，直到 `_on_chat_list()` 为真（最多 4 次，每次约 1s，远低于清栈兜底）。
+    _back_ok = False
+    for _b in range(4):
+        if _on_chat_list():
+            _back_ok = True
+            break
+        soul.tap_back_arrow()
+        time.sleep(1.2)
+    print("已返回列表" + ("（第 %d 次返回箭头后确认）" % (_b + 1) if _back_ok and _b else ""))
+    if not _back_ok:
+        print("  !! 连点 4 次返回仍未回到聊天列表（%s）→ 交给下一次导航兜底" % _page_state())
     if sent == 0:
         # ⭐ 2026-09-28：旧版此处照样 return True → 明明一条没发却报成功（静默失败）。
         print("!! 本次 0 条发出（长度闸 / 发送锁 / 连发闸拦截）→ 返回失败")
@@ -1575,8 +2002,14 @@ def reply(name, texts, verify_db=True, wait=0, allow_chain=False):
         time.sleep(1.5)
         print("  [trace] verify_sent() 开始（im.pull + DB 指纹比对）")
         if not verify_sent(name):
-            print("!! DB 校验失败：最后一条不是我发的，需重试")
-            return False
+            # ⭐ 2026-10-06 假阴性修复：同名多人 → `_uid_of` 拒绝猜 → verify_sent 必 false，
+            #   但发送侧（soul_send）已按文本指纹确认落库。用同一判据复核，避免误报"发送未成功"。
+            if _sent_by_text(texts):
+                print("  · 昵称解析不出唯一 uid（同名多人 / 带装饰）→ "
+                      "改用**文本指纹**复核：本条已发，判为成功")
+            else:
+                print("!! DB 校验失败：最后一条不是我发的，需重试")
+                return False
     return True
 
 

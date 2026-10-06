@@ -34,11 +34,16 @@ import soul_im as im
 import soul_reply as sr
 import soul_send as ss
 
-try:
-    from soul_instance import state_path as _sp
-    MEMDB = _sp(BASE, "soul_memory.db")     # ⭐ 实例隔离：vm1 不得读账号1 累积库
-except Exception:
-    MEMDB = os.path.join(BASE, "soul_memory.db")
+# ⭐ 2026-10-05：累积库**按当前登录账号**解析（切号后立即换文件）。见 soul_acct。
+def _memdb():
+    try:
+        import soul_acct
+        return soul_acct.path(BASE, "soul_memory.db")
+    except Exception:
+        return os.path.join(BASE, "soul_memory.db")
+
+
+MEMDB = _memdb()      # 兼容快照；真正的读写请用 _memdb()
 MAX_BACK = 4
 
 # ── 让 soul_reply 的「库里聊过≥3句」判定同时看累积库 ──────────────
@@ -205,30 +210,41 @@ def fast_reply(name, texts, my_recent=None, maxlen=40):
         print("!! [fast] 前置异常: %r" % (e,))
         return "MISS"
 
-    _to_chat_list()
-    lap = _lap(lap, "ready+nav")
-
-    # ── 找会话行（保留 OCR；pending 的人都在列表顶部，pages=1 足够）──
-    try:
-        pos = sr.find(name, pages=1)
-    except Exception as e:
-        print("!! [fast] find 异常: %r" % (e,))
-        pos = None
+    # ⭐ 2026-10-06 修（P1#4 根因①·对称短路）：若此刻**已经在她会话页**
+    #   （奇遇铃点完「立即私聊」等场景直接落到本路径），与 soul_reply.reply 同样
+    #   **不回聊天列表、不 find** —— 列表里根本没有她的行，find 会空跑滚顶+搜索兜底、
+    #   最后报"未找到" → 永远发不出。判据复用同一份 `sr._on_session_of`。
     in_session = False
-    if not pos:
-        # ⭐ 列表首页没有渲染行（老联系人沉在列表深处 / 末条是卡片不渲染）
-        #   → 走**搜索昵称通道**（用户 2026-10-03 指点）。soul_reply.find_by_search
-        #   自带重名保护：用「本地库有没有往来记录」判定本人，不会误进同名生人。
-        print("  [fast] 列表首页未找到「%s」→ 搜索昵称通道" % name)
+    try:
+        in_session = bool(sr._on_session_of(name))
+    except Exception:
+        in_session = False
+    if in_session:
+        print("  [fast] 已在「%s」的会话页 → 跳过导航/查找，直接发" % name)
+        pos = None
+    else:
+        _to_chat_list()
+        lap = _lap(lap, "ready+nav")
+        # ── 找会话行（保留 OCR；pending 的人都在列表顶部，pages=1 足够）──
         try:
-            in_session = bool(sr.find_by_search(name))
+            pos = sr.find(name, pages=1)
         except Exception as e:
-            print("!! [fast] 搜索通道异常: %r" % (e,))
-            in_session = False
-        lap = _lap(lap, "search")
-        if not in_session:
-            print("!! [fast] 搜索也没找到「%s」→ 放弃本次" % name)
-            return "MISS"
+            print("!! [fast] find 异常: %r" % (e,))
+            pos = None
+        if not pos:
+            # ⭐ 列表首页没有渲染行（老联系人沉在列表深处 / 末条是卡片不渲染）
+            #   → 走**搜索昵称通道**（用户 2026-10-03 指点）。soul_reply.find_by_search
+            #   自带重名保护：用「本地库有没有往来记录」判定本人，不会误进同名生人。
+            print("  [fast] 列表首页未找到「%s」→ 搜索昵称通道" % name)
+            try:
+                in_session = bool(sr.find_by_search(name))
+            except Exception as e:
+                print("!! [fast] 搜索通道异常: %r" % (e,))
+                in_session = False
+            lap = _lap(lap, "search")
+            if not in_session:
+                print("!! [fast] 搜索也没找到「%s」→ 放弃本次" % name)
+                return "MISS"
 
     if pos:
         # 点行前确认还在主框架（替代 _on_chat_list 的 OCR，0.3s：

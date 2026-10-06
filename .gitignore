@@ -20,6 +20,58 @@
 newhost_creds*
 remote_hub_tokenstore.ps1
 
+# ---- 凭据 / 身份（2026-10-06 安全整改）----
+.ark_key
+newhost_bootstrap_b64.txt
+newhost_bootstrap.ps1
+soul_vm.json
+soul_accounts.json
+switch_state.json
+soul_notes.*.json
+.code_watch_state.json
+
+# ---- 调试产物目录（2026-10-06 仓库卫生）----
+/_probe/
+/_trash_*/
+/_tasks_backup/
+/doc-fetch-resources/
+/draft_*_folder/
+/_soulweb/
+
+# ---- 根目录下划线调试文件（统一兜底；已跟踪文件不受影响）----
+/_*.txt
+/_*.png
+/_*.py
+
+# ---- 根目录调试 txt ----
+/.gitcheck.txt
+/_cli_test.txt
+/_shot1.txt
+/_shot_out.txt
+/_wstest_out.txt
+/captest_out.txt
+/check.txt
+/cmd.txt
+/diag*.txt
+/emu_out.txt
+/emu_status.txt
+/ls2.txt
+/shot_test.txt
+/ui_parsed.txt
+
+# ---- 调试截图 / 个人照片 ----
+/_now_vm1.png
+/_screen0.png
+/_screen1.png
+/_test_screen0.png
+/_test_screen1.png
+/_wstest.png
+/v0live.png
+/v1live.png
+/wshot*.png
+/_soulweb/login.png
+/她发的自拍_*.jpg
+
 # ---- Python ----
 __pycache__/
 *.pyc
@@ -37,11 +89,19 @@ _dbsync612/
 tmp/
 _tmp/
 _preview/
+# 2026-10-05：MuMu 内置截图的归档（377 张/95.8MB，从 C 盘共享文件夹搬出来的）
+_mumushots_archive/
 
 # ---- 运行痕迹（_uimap 子目录，保留顶层坐标真值） ----
 _uimap/daemon/
 _uimap/demo/
 _uimap/gestures/
+_uimap/supervisor/
+_uimap/*.txt
+_uimap/desk*.png
+_uimap/recover.png
+_uimap/reset_chat.png
+_uimap/win_140026.png
 
 # ---- 敏感 / 个人 ----
 .workbuddy/

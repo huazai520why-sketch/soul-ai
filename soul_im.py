@@ -80,6 +80,23 @@ def _local_of(dst):
     """本地正式库路径（按实例）。未知库名退回 DIR + 实例后缀。"""
     return _LOCAL_DB.get(dst) or _sp(DIR, dst)
 
+
+def memdb():
+    """当前账号的**累积库**路径（只增不减）。按登录账号解析（切号即换文件）。"""
+    try:
+        import soul_acct as _acct
+        return _acct.path(DIR, "soul_memory.db")
+    except Exception:
+        return os.path.join(DIR, "soul_memory.db")
+
+
+# ⭐ 2026-10-06：**设备原生** sessionId 集合（每次成功 pull 时刷新，回填**之前**抓取）。
+#   用途：把累积库回填进正式库后，`pending()` 里两类会话必须区别对待 ——
+#     · 设备真实会话（在集合里）→ 照旧不限时限（可能是攒了几天的未读，仍该回）；
+#     · 回填进来的老会话（不在集合里）→ 套 24h 时限（口径同 `pending_mem`，冷过就算聊死了）。
+#   否则回填会把 100+ 小时前的老会话全变成"待回"，脚本转头去打扰死人。
+_DEVICE_SIDS = set()
+
 def _adb(*a, **kw):
     """兼容垫片（2026-09-28 MuMu 迁移）—— 全部走 mumu-cli 的 sh 免端口通道。
 
@@ -133,12 +150,116 @@ def integrity(path=IMDB):
         return False, "%s: %s" % (type(e).__name__, e)
 
 
+# ═══════════════ 当前登录账号：**权威探测（App prefs）** ═══════════════
+# ⭐ 2026-10-05（用户口径：「如何确认当前账号 只需要点击导航栏的 自己即可」）：
+#   UI 昵称是准的，但 OCR 慢且有误差。更优解 —— 直接读 **App 自己写的 prefs**，
+#   App 内部就以它为准，切号**立即生效**、无需等新消息、零 OCR：
+#     · sp_info_gather.xml → <string name="userid">96691646</string>   ← 当前登录 uid
+#     · soul_startup.xml   → sp_key_crash_uid_name = <SESS>             ← 当前登录会话密钥
+#   实测（2026-10-05 23:34，与 UI 截图三方对齐）：
+#     UI 昵称「抬头仰望星空」/ userid=96691646 / crash_uid_name=SmNjOUhi…  ← 主号，一致 ✅
+#   为什么不能用 _dd.active_sess()：它按「谁最后收到消息」选库 → 切号后新号还没收到
+#   新消息，旧号库时间戳更晚 → **持续猜错**（实测把主号猜成了 402857053 离殇）。故它降级为兜底。
+PREFS_DIR = "/data/data/cn.soulapp.android/shared_prefs"
+_PREFS_ID = {"uid": None, "sess": None, "ts": 0.0}
+_PREFS_TTL = 15.0
+
+
+def _own_uid_of_sess(sess):
+    """某个会话库「自己」的 uid（库内 senderId 计数最高者）。取不到返回 None。"""
+    if not sess:
+        return None
+    try:
+        db = "%s/IM-SDK-%s-DATA.db" % (DBDIR, sess)
+        out = _soul.sh(
+            'sqlite3 "%s" "SELECT senderId FROM chatmsg WHERE senderId IS NOT NULL '
+            'GROUP BY senderId ORDER BY COUNT(*) DESC LIMIT 1;" 2>/dev/null' % db)
+        v = (out or "").strip()
+        return v or None
+    except Exception:
+        return None
+
+
+def prefs_identity(force=False):
+    """当前登录账号 (uid, sess)。读不到的那项为 None。
+
+    两个信号，**交叉校验**（2026-10-05 23:53 实测标定）：
+      · `sp_info_gather.xml` → `userid`           —— 切号**立即跟随**（可靠）✅
+      · `soul_startup.xml`   → `sp_key_crash_uid_name` —— ⚠️ **只在 App 启动时写一次**，
+          切号后**不跟随**（实测：切到账号2 后它仍是主号的会话）→ **不可单独采信**。
+    因此：
+      uid  ← `userid`
+      sess ← **由 uid 在设备库里反查**（哪个库以它为"自己"，soul_devdb 直查，0.4s）
+             ；反查不到才退回 crash_uid_name，再退回配置里的 sess。
+    """
+    now = time.time()
+    if not force and _PREFS_ID["ts"] and (now - _PREFS_ID["ts"]) < _PREFS_TTL:
+        return _PREFS_ID["uid"], _PREFS_ID["sess"]
+    uid = crash_sess = None
+    try:
+        g = _soul.sh("cat %s/sp_info_gather.xml 2>/dev/null" % PREFS_DIR, timeout=15)
+        m = re.search(r'name="userid">([^<]+)<', g or "")
+        if m:
+            uid = m.group(1).strip() or None
+    except Exception:
+        pass
+    try:
+        s = _soul.sh("cat %s/soul_startup.xml 2>/dev/null" % PREFS_DIR, timeout=15)
+        m = re.search(r'name="sp_key_crash_uid_name">([^<]+)<', s or "")
+        if m:
+            crash_sess = m.group(1).strip() or None
+    except Exception:
+        pass
+    # sess：优先「由 uid 反查库」，其次 crash_uid_name，最后配置
+    sess = None
+    if uid:
+        sess = _sess_of_uid(uid)
+        if not sess:
+            sess = crash_sess
+    if not sess:
+        sess = crash_sess
+    if not uid and sess:
+        uid = _own_uid_of_sess(sess)
+    _PREFS_ID.update({"uid": uid, "sess": sess, "ts": now})
+    return uid, sess
+
+
+def _sess_of_uid(uid):
+    """设备上「以 uid 为自己」的会话库（senderId 计数最高者 == uid）。找不到返回 None。"""
+    if not uid:
+        return None
+    try:
+        import soul_devdb as _dd
+        for s in _dd._candidate_sessions():
+            db = "%s/IM-SDK-%s-DATA.db" % (DBDIR, s)
+            out = _soul.sh(
+                'sqlite3 "%s" "SELECT senderId FROM chatmsg WHERE senderId IS NOT NULL '
+                'GROUP BY senderId ORDER BY COUNT(*) DESC LIMIT 1;" 2>/dev/null' % db)
+            if (out or "").strip() == str(uid):
+                return s
+    except Exception:
+        pass
+    return None
+
+
 def _device_active_sess():
     """探测设备上当前账号的活动库会话名（重新登录/切号后密钥会变）。
 
-    判据：该库 chatmsg 的 MAX(localTime) 最新（死库/残留库时间戳明显落后）。
-    探测失败退回静态 SESS。结果不缓存——调用方按需探测，避免换号后继续拉错库。
+    优先级（2026-10-05 改）：
+      ① **权威**：App prefs 记的当前会话密钥（切号立即生效，不等新消息）；
+      ② 由 prefs 的 uid 反查哪个库以它为「自己」；
+      ③ 兜底：按 chatmsg 新鲜度猜（_dd.active_sess，切号后可能滞后）；
+      ④ 再兜底：目录里第一个 IM-SDK-*.db。
     """
+    try:
+        _uid, ps = prefs_identity()
+        if ps:
+            return ps
+        s2 = _sess_of_uid(_uid)
+        if s2:
+            return s2
+    except Exception:
+        pass
     try:
         import soul_devdb as _dd
         found = _dd.active_sess(force=True)
@@ -158,12 +279,68 @@ def _device_active_sess():
     return SESS
 
 
+_DEV_UID_CACHE = {"ts": 0.0, "s": None}
+_DEV_UID_TTL = float(os.environ.get("SOUL_DEV_UID_TTL", "20"))
+
+
+def device_uids(ttl=None):
+    """设备端**当前真实存在**的会话对象 uid 集合（一次 sqlite3 直查设备库，~0.3s，带缓存）。
+
+    ⭐ 2026-10-06 用户口径「**没有就算了 不要死磕**」：
+      Soul 会把本地会话删掉 —— 实测 杨三岁(363494435)/意中人♑️(446415751)/
+      甜心姐姐丶(488096709)/💕小謎(357893109) 在设备端 **33 个库里零命中**，
+      但累积库里还留着旧消息 → 脚本每轮把它们当待回，跑 UI 全路径硬找 ≈100s，
+      最后必然失败（`⚠️发送未成功`）→ 一轮 480s 里近一半被吃光，还饿死匹配/唤醒流程。
+      有了这个集合，发送前 0.3s 就能判「设备端根本没这个会话」→ 直接放弃。
+
+    返回 set[str]；**拿不到返回 None**（sqlite3 不可用 / adbd 掉权 / 目录空）
+    → 调用方一律**不拦**（宁可不省时间，也绝不误杀真人）。
+    """
+    ttl = _DEV_UID_TTL if ttl is None else float(ttl)
+    now = time.time()
+    if _DEV_UID_CACHE["s"] is not None and (now - _DEV_UID_CACHE["ts"]) < ttl:
+        return _DEV_UID_CACHE["s"]
+    out = None
+    try:
+        sess = _device_active_sess()
+        db = "%s/IM-SDK-%s-DATA.db" % (DBDIR, sess)
+        txt = _soul.sh('sqlite3 "%s" "SELECT toUserId FROM session;" 2>/dev/null' % db,
+                       timeout=15)
+        txt = (txt or "").replace("\r", "")
+        uids = {ln.strip() for ln in txt.splitlines() if ln.strip().isdigit()}
+        if uids:
+            out = uids
+        else:
+            print("[warn] device_uids()：设备会话表读空（可能 adbd 掉权/未登录）→ 本轮不做该闸")
+    except Exception as e:
+        print(f"[warn] device_uids()：设备直查失败（{e!r}）→ 本轮不做该闸")
+    _DEV_UID_CACHE["ts"], _DEV_UID_CACHE["s"] = now, out
+    return out
+
+
+def has_device_session(uid):
+    """设备端**还有没有**这个人的会话。拿不到设备数据 → 恒 True（不拦，fail-open 到原路径）。"""
+    s = device_uids()
+    if s is None:
+        return True
+    return str(uid) in s
+
+
 def _device_me():
     """探测当前登录账号的 uid（活动库里发消息最多的人 = 账号自己）。
 
     换号/重登后 ME 可能变（实测实例重启后变成账号1 96691646）。
     取不到返回 None，调用方自行决定是否用静态 ME。
+
+    ⭐ 2026-10-05：**优先 App prefs 的 userid**（权威、切号立即生效）；
+    只有 prefs 读不到才退回「库内 senderId 计数最高者」的老办法（切号后会滞后猜错）。
     """
+    try:
+        uid, _s = prefs_identity()
+        if uid:
+            return uid
+    except Exception:
+        pass
     try:
         sess = _device_active_sess()
         db = f"{DBDIR}/IM-SDK-{sess}-DATA.db"
@@ -229,9 +406,25 @@ def pull(retry=4):
         exist = _soul.sh("ls -1 " + DBDIR + " 2>/dev/null").replace("\r", "")
         present = set(exist.split())
         if not present:
-            print(f"[warn] pull 第 {attempt+1} 次：读不到设备库目录（MuMu 未启动 / display 未就绪）")
-            time.sleep(2.0)
-            continue
+            # ⭐ 2026-10-06 修复：空目录最常见的原因是 **adbd 掉回 shell 权限**
+            #   （uid=2000 读不了 /data/data），而不是"MuMu 没启动"。
+            #   旧文案 + 旧逻辑（root 每进程只查一次）叠加 → 一旦掉权，整条链路
+            #   默默报废到进程结束（实测 00:50 起 6 个待回全部"库里有没聊过"被拒）。
+            #   现在：立即**强制复核 root**（adb root），成功就再试一次。
+            _healed = False
+            try:
+                if _soul._adb_ensure_root(force=True):
+                    exist = _soul.sh("ls -1 " + DBDIR + " 2>/dev/null").replace("\r", "")
+                    present = set(exist.split())
+                    _healed = bool(present)
+            except Exception as _e:
+                print(f"[warn] pull：adb root 复核异常 {_e!r}")
+            if not present:
+                print(f"[warn] pull 第 {attempt+1} 次：读不到设备库目录 "
+                      f"（adbd 非 root 且自愈失败 / MuMu 未启动 → {DBDIR} 为空）")
+                time.sleep(2.0)
+                continue
+            print(f"[warn] pull：adbd 掉权已自愈 → 库目录可读（{len(present)} 个文件）")
         # ② 清空 stage（上一轮的残留绝不能混进这一轮）
         for name in os.listdir(STAGE):
             try:
@@ -291,6 +484,16 @@ def pull(retry=4):
             print(f"[warn] pull 第 {attempt+1} 次：stage 校验不过（{swhy}）→ 不换入，重试")
             time.sleep(1.5)
             continue
+        # ⑤.5 ⭐ 2026-10-06：趁 stage 还是**纯设备数据**，先记下设备原生的 sessionId 集合
+        #      （换入 + 回填之后就没法区分了）。pending() 靠它区分"设备真会话/回填老会话"。
+        try:
+            _sp_db = os.path.join(STAGE, "im_data.db")
+            _sc = sqlite3.connect("file:%s?mode=ro" % _sp_db.replace("\\", "/"), uri=True)
+            _DEVICE_SIDS.clear()
+            _DEVICE_SIDS.update(str(r[0]) for r in _sc.execute("SELECT sessionId FROM session"))
+            _sc.close()
+        except Exception as _e:
+            print(f"[warn] pull：抓设备原生 sessionId 集合失败（{_e!r}）→ 本轮 pending 全按回填处理")
         # ⑥ 原子换入：整体替换，读者不会看到"新 db + 旧 wal"的半成品
         staged = []
         for _, dst in pairs:
@@ -349,11 +552,29 @@ def pull(retry=4):
             time.sleep(1.5)
             continue
         ok = moved
+        # ⭐ 2026-10-06 用户拍板「把累积库合并到正式库里面啊」：
+        #   正式库刚被设备数据整体替换 → **立即把累积库补回正式库**，让正式库
+        #   变成「设备 ∪ 累积库全量」，所有只读正式库的下游一次到位。
+        #   顺序很重要：先回填（累积→正式），再增量并入（正式→累积，收设备新消息）。
+        #   两步都失败也绝不影响 pull 返回值（拿到的设备数据已经落库）。
+        try:
+            _bf = backfill_imdb()
+            if _bf:
+                print(f"[pull] 已把累积库回填进正式库 {_bf} 行")
+        except Exception as _e:
+            print(f"[warn] pull 后 backfill_imdb 异常（不影响本轮拉取）: {_e!r}")
+        try:
+            _n = merge_memory()
+            if _n:
+                print(f"[pull] 已增量并入累积库 {_n} 条")
+        except Exception as _e:
+            print(f"[warn] pull 后 merge_memory 异常（不影响本轮拉取）: {_e!r}")
         return ok
     return ok
 
-def names():
-    """userId → 昵称。库/表还没建出来时返回 {}（并**明确告警**，不许静默当成功）。
+def _names_db():
+    """（原 `names()` 实现）**设备/正式**昵称库 `chat_im.db.im_user_bean` 的原始昵称表。
+    userId → 昵称。库/表还没建出来时返回 {}（并**明确告警**，不许静默当成功）。
 
     ⚠️ 2026-09-30 双实例实测：新账号在 App 首次同步出会话之前，本地还没有
     `chat_<Ecpt>` 这个库 → 老代码直接抛 `no such table: im_user_bean` 把整轮打断
@@ -378,7 +599,7 @@ def names():
             c.close()
     except sqlite3.OperationalError as e:
         if "no such table" in str(e) or "unable to open" in str(e):
-            print(f"[warn] names()：聊天库尚未就绪（{e}）→ 尝试设备端回退")
+            print(f"[warn] _names_db()：聊天库尚未就绪（{e}）→ 尝试设备端回退")
         else:
             raise
     if d:
@@ -399,13 +620,214 @@ def names():
                 if u and s and u not in d:
                     d[u] = s
                     n += 1
-        print(f"[warn] names()：本地昵称库为空 → 设备端回退补齐 {n} 条")
+        print(f"[warn] _names_db()：本地昵称库为空 → 设备端回退补齐 {n} 条")
     except Exception as e:
-        print(f"[warn] names()：设备端回退失败（{e!r}）")
+        print(f"[warn] _names_db()：设备端回退失败（{e!r}）")
     if not d:
-        print("[warn] names()：本地与设备端都拿不到昵称 → 按空映射处理，"
+        print("[warn] _names_db()：本地与设备端都拿不到昵称 → 按空映射处理，"
               "该实例本轮只会有系统/无待回结果")
     return d
+
+
+_NAMES_ALL_TTL = float(os.environ.get("SOUL_NAMES_ALL_TTL", "15"))
+_names_all_cache = {"ts": 0.0, "d": {}}
+
+
+def names(ttl=None):
+    """userId → 昵称。**统一入口** = 正式昵称库 ∪ 累积库 `nick` 表（只增不减）。
+
+    ⭐ 2026-10-06 用户拍板「把累积库合并到正式库里面」：
+
+    🔴 为什么必须并（用户 2026-10-05/06 反复踩到）：
+      正式昵称库 `chat_im.db.im_user_bean` 只有 **77 条**，而累积库 `nick` 有 **258 条**
+      —— 差额的 181 人是被 Soul 裁剪掉的老联系人，昵称映射一起没了；
+      `soul_reply._resolve_db_target` 用昵称判定「库里有没有聊过且骨架含这个名字」
+      → 判否 → **对真人拒发**（宁可不发，用户看到的就是"还有人没回复"）。
+      并集后这两处直接自愈，`pending()`/`sessions()` 显示也不再退化成 uid。
+
+    实现：`_names_db()`（设备/正式）优先，缺失的用累积库 nick 补；带 TTL 缓存（默认 15s），
+    避免高频调用反复开累积库。返回**副本**，调用方随意改不影响缓存。
+    （`im_user_bean` 有 41 列、多个 NOT NULL 无默认 → 不适合把累积库昵称硬写进去，
+      改在**读取入口**并集，语义等价且零脏数据风险。）
+    """
+    ttl = _NAMES_ALL_TTL if ttl is None else float(ttl)
+    now = time.time()
+    if _names_all_cache["d"] and (now - _names_all_cache["ts"]) < ttl:
+        return dict(_names_all_cache["d"])
+    out = dict(_names_db() or {})
+    try:
+        p = memdb()
+        if os.path.exists(p):
+            c = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+            try:
+                for uid, name in c.execute("SELECT uid,name FROM nick"):
+                    u = str(uid)
+                    if u and name and u not in out:
+                        out[u] = str(name)
+            finally:
+                c.close()
+    except Exception as e:
+        print(f"[warn] names()：累积库昵称读取失败（{e!r}）→ 仅用正式昵称库")
+    _names_all_cache["ts"], _names_all_cache["d"] = now, out
+    return dict(out)
+
+
+def names_all(ttl=None):
+    """兼容旧名：`names()` 的统一入口（正式 ∪ 累积库）。"""
+    return names(ttl)
+
+
+def merge_memory():
+    """把正式库(`IMDB`)增量并入累积库（`soul_memory.db`）—— Soul 会清库，这里只增不减。
+
+    ⭐ 2026-10-06 用户拍板「把累积库和正式库合并一下不就行了」：
+      原实现只挂在 `soul_daemon` 每轮末尾调一次 → 累积库**每轮才同步一次，天然滞后**
+      （实测我 00:45 发的句子 00:56 才进累积库）。现在改挂在 `pull()` 成功之后
+      —— **只要拉了正式库就立即并入**，滞后窗口从"一整轮"缩到"一次 pull 之内"。
+    `soul_daemon.merge_memory()` 保留同名薄包装，老调用点行为不变。
+    """
+    src = IMDB
+    if not os.path.exists(src):
+        return 0
+    ME_S = str(ME)
+    m = sqlite3.connect(memdb())
+    m.execute("""CREATE TABLE IF NOT EXISTS chatmsg(
+      sessionId TEXT, msgId TEXT, senderId TEXT, receiverId TEXT, localTime INTEGER,
+      msgType INTEGER, text TEXT, msgContent TEXT, PRIMARY KEY(sessionId, msgId))""")
+    m.execute("""CREATE TABLE IF NOT EXISTS session(
+      sessionId TEXT PRIMARY KEY, toUserId TEXT, chatType INTEGER, unReadCount INTEGER,
+      timestamp INTEGER, lastMsgText TEXT)""")
+    m.execute("CREATE TABLE IF NOT EXISTS nick(uid TEXT PRIMARY KEY, name TEXT)")
+    m.execute("CREATE INDEX IF NOT EXISTS idx_cm_sid ON chatmsg(sessionId, localTime)")
+    m.commit()
+    added = 0
+    try:
+        s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        ccols = set(x[1] for x in s.execute("PRAGMA table_info(chatmsg)").fetchall())
+        use = [c for c in ("sessionId", "msgId", "senderId", "receiverId", "localTime",
+                           "msgType", "text", "msgContent") if c in ccols]
+        if use:
+            for r in s.execute("SELECT %s FROM chatmsg" % ",".join(use)).fetchall():
+                d = dict(zip(use, r))
+                if not str(d.get("sessionId") or "").startswith(ME_S):
+                    continue
+                try:
+                    cur = m.execute("INSERT OR IGNORE INTO chatmsg(%s) VALUES(%s)"
+                                    % (",".join(use), ",".join("?" * len(use))),
+                                    [d.get(k) for k in use])
+                    added += cur.rowcount or 0
+                except Exception:
+                    pass
+        scols = set(x[1] for x in s.execute("PRAGMA table_info(session)").fetchall())
+        suse = [c for c in ("sessionId", "toUserId", "chatType", "unReadCount",
+                            "timestamp", "lastMsgText") if c in scols]
+        if suse:
+            for r in s.execute("SELECT %s FROM session" % ",".join(suse)).fetchall():
+                d = dict(zip(suse, r))
+                if not str(d.get("sessionId") or "").startswith(ME_S):
+                    continue
+                try:
+                    m.execute("INSERT OR REPLACE INTO session(%s) VALUES(%s)"
+                              % (",".join(suse), ",".join("?" * len(suse))),
+                              [d.get(k) for k in suse])
+                except Exception:
+                    pass
+        s.close()
+        m.commit()
+    except Exception as e:
+        print(f"[warn] merge_memory 出错: {e!r}")
+    # 昵称映射（正式库为准）
+    try:
+        for uid, name in (names() or {}).items():
+            m.execute("INSERT OR REPLACE INTO nick(uid,name) VALUES(?,?)", (str(uid), str(name)))
+        m.commit()
+    except Exception:
+        pass
+    m.close()
+    return added
+
+
+def backfill_imdb():
+    """⭐ 2026-10-06 用户拍板「**把累积库合并到正式库里面啊**」：
+
+    把累积库(`soul_memory.db`)里**正式库没有的** session / chatmsg 回填进正式库
+    (`im_data.db`)，让「正式库」= **设备数据 ∪ 累积库全量**：
+      · 所有只读正式库的下游（`pending` / `sessions` / `leads` / `follow` /
+        `soul_reply._hist_uids` 的「聊过 ≥3 句」身份核对）都直接看到全量历史，
+        不必再各自打累积库补丁；
+      · 被 Soul 裁剪掉的会话全部回来（实测正式库仅 26 个 session，累积库 473 个）。
+
+    ⚠️ 正式库每次 pull 都被设备数据**整体替换** → 必须在 pull 成功后调用，回填才持久。
+    ✅ 幂等：`session.sessionId` / `chatmsg.msgId` 上都是 **UNIQUE 索引** → `INSERT OR IGNORE`
+       不会重复，也**不会覆盖设备刚拉下来的新数据**（设备行先到，OR IGNORE 保它）。
+    📌 正式库表比累积库多列、且若干 NOT NULL 无默认 → 按目标表列清单补齐（缺的填 0/派生值）。
+    返回本轮回填的行数（0 = 无需回填）。
+    """
+    src, dst = memdb(), IMDB
+    if not (os.path.exists(src) and os.path.exists(dst)):
+        return 0
+    ME_S = str(ME)
+    spec = (
+        # (表名, 值来自累积库的列→目标列默认表达式, 过滤条件)
+        ("session",
+         {"userType": "0", "msgStatus": "0", "status": "0", "dbStatus": "0"},
+         "sessionId LIKE ?"),
+        ("chatmsg",
+         {"serverTime": "localTime", "msgStatus": "0", "msgReceiveStatus": "0",
+          "ack": "0", "snapChat": "0", "msgSource": "0", "showType": "0", "dbStatus": "0"},
+         "msgId IS NOT NULL AND msgId <> '' AND sessionId LIKE ?"),
+    )
+    added = 0
+    try:
+        c = sqlite3.connect(dst, timeout=20)
+    except Exception as e:
+        print(f"[warn] backfill_imdb：打开正式库失败（{e!r}）")
+        return 0
+    try:
+        c.execute("ATTACH DATABASE ? AS mem", (src,))
+        for tname, defs, where in spec:
+            try:
+                dinfo = c.execute("PRAGMA table_info(%s)" % tname).fetchall()
+                dcols = [r[1] for r in dinfo]
+                notnull = {r[1] for r in dinfo if r[3] and r[4] is None and r[5] == 0}
+                # id 是自增主键 → 不写，交给 SQLite
+                tgt = [x for x in dcols if x != "id"]
+                mcols = set(r[1] for r in c.execute("PRAGMA mem.table_info(%s)" % tname))
+                sel, missing = [], []
+                for col in tgt:
+                    if col in mcols:
+                        sel.append(col)
+                    elif col in defs:
+                        sel.append(defs[col])
+                    elif col in notnull:
+                        missing.append(col)
+                        sel.append("0")
+                    else:
+                        sel.append("NULL")
+                if missing:
+                    print(f"[warn] backfill_imdb：{tname} 有 NOT NULL 列无处取值 {missing} → 跳过该表")
+                    continue
+                cur = c.execute(
+                    "INSERT OR IGNORE INTO %s(%s) SELECT %s FROM mem.%s WHERE %s"
+                    % (tname, ",".join(tgt), ",".join(sel), tname, where),
+                    (ME_S + "%",))
+                added += cur.rowcount or 0
+            except Exception as e:
+                print(f"[warn] backfill_imdb：回填 {tname} 失败（{e!r}）→ 跳过")
+        c.commit()
+        try:
+            c.execute("DETACH DATABASE mem")
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"[warn] backfill_imdb 出错: {e!r}")
+    finally:
+        try:
+            c.close()
+        except Exception:
+            pass
+    return added
+
 
 def _fmt(ts):
     try:
@@ -427,6 +849,92 @@ def sessions(unread_only=False):
     c.close()
     print(f"--- 共 {n} 个会话 ---")
 
+# ⭐ 2026-10-06 新增：**累积库兜底待回**（修「有人没回复、脚本却看不见」）
+_MEM_PEND_TTL = float(os.environ.get("SOUL_MEM_PEND_TTL", "20"))
+_MEM_PEND_MAX_H = float(os.environ.get("SOUL_MEM_PEND_MAX_H", "24"))
+_mem_pend_cache = {"ts": 0.0, "rows": []}
+
+
+def pending_mem(max_h=None, ttl=None):
+    """⭐ 2026-10-06 新增：**累积库兜底待回**。
+
+    🔴 为什么必须要有（用户 2026-10-06 当场质疑「好像还有人没回复啊」）：
+      `pending()` 只读**正式库** `im_data.db`，而 **Soul 会自己裁剪本地库** ——
+      实测 00:39：正式库只有 **14 个 session / 44 条消息**（时间跨度仅 10-03 起），
+      而累积库 `soul_memory.db` 里当前账号有 **411 个 session**、其中 **21 个末条是她发的**。
+      ⇒ 被 Soul 裁掉的老会话，脚本**完全看不见** → 她明明在等回复，脚本却报「待回 0 个」
+        → 于是转去匹配/唤醒（用户看到的就是"怎么跑到唤醒流程去了"）。
+
+    口径（保守，防误发 / 防炒冷饭）：
+      · 只认**当前账号**的会话（`sessionId` 以当前 uid 开头）—— 跟随 App 内切号
+      · 只认「最近一条真人消息是**她**发的」（跳过系统卡片/图片/语音按转写算）
+      · 只认 **冷 ≤ max_h 小时**（默认 24h）—— 更老的算聊死了，不再回也不主动打扰
+      · 与正式库重复的会话由 `pending()` 统一去重
+      · 结果带 TTL 缓存（默认 20s），避免每轮全表扫描
+
+    返回与 `pending()` 同构的 7 元组列表：`(timestamp, name, unread, text, localTime, sessionId, msgType)`
+    （这里 `timestamp` 与 `localTime` 都取她的 `localTime`，`unread` 恒 0 —— 正式库才有未读数）
+    """
+    max_h = _MEM_PEND_MAX_H if max_h is None else float(max_h)
+    ttl = _MEM_PEND_TTL if ttl is None else float(ttl)
+    now = time.time()
+    if _mem_pend_cache["rows"] and (now - _mem_pend_cache["ts"]) < ttl:
+        return _mem_pend_cache["rows"]
+    try:
+        import soul_acct as _acct
+        db = _acct.path(DIR, "soul_memory.db")
+    except Exception:
+        db = os.path.join(DIR, "soul_memory.db")
+    out = []
+    if not os.path.exists(db):
+        return out
+    me = str(ME)
+    try:
+        c = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
+        nicks = {str(u): n for u, n in c.execute("SELECT uid,name FROM nick")}
+        cutoff = int((now - max_h * 3600) * 1000)
+        rows = c.execute(
+            "SELECT sessionId, senderId, text, msgContent, localTime, msgType FROM ("
+            "  SELECT sessionId, senderId, text, msgContent, localTime, msgType,"
+            "         ROW_NUMBER() OVER (PARTITION BY sessionId ORDER BY localTime DESC) rn"
+            "  FROM chatmsg WHERE sessionId LIKE ?"
+            ") WHERE rn <= 4 AND localTime >= ? ORDER BY sessionId, localTime DESC",
+            (me + "%", cutoff)).fetchall()
+        c.close()
+    except Exception as e:
+        print(f"  !! 累积库待回扫描失败（保守返回空）: {e!r}")
+        return out
+    by_sess = {}
+    for sid, sender, text, content, lt, mt in rows:
+        by_sess.setdefault(sid, []).append((str(sender), text, content, int(mt or 0), int(lt or 0)))
+    for sid, msgs in by_sess.items():
+        real = None
+        for sender, text, content, mt, lt in msgs:      # 已按 localTime DESC
+            eff = str(text).strip() if (text and str(text).strip()) else ""
+            if not eff and mt == VOICE_MT:
+                eff = _voice_text(content)              # 语音 → Soul 自带转写
+            if not eff:
+                continue                                # 图片/视频/系统卡片 → 不算她说话
+            if _is_sys(eff, content):
+                continue
+            real = (sender, eff, lt, mt)
+            break
+        if not real:
+            continue
+        sender, eff, lt, mt = real
+        if sender == me:
+            continue                                    # 末条是我发的 → 不是待回
+        uid = sid[len(me):] if sid.startswith(me) else ""
+        name = nicks.get(uid) or uid or sid
+        if _is_official(name) or _is_official_uid(uid, eff):
+            continue
+        out.append((lt, name, 0, eff, lt, sid, mt))
+    out.sort(key=lambda z: z[0], reverse=True)
+    _mem_pend_cache["rows"] = out
+    _mem_pend_cache["ts"] = now
+    return out
+
+
 def pending():
     """⭐ 待回（**全靠数据库，不读屏**）：所有会话中「最后一条真实消息是对方发的」= 我该回。
 
@@ -447,6 +955,7 @@ def pending():
     rows = c.execute("SELECT sessionId, toUserId, unReadCount, timestamp FROM session "
                      "ORDER BY timestamp DESC").fetchall()
     out = []
+    answered = set()        # ⭐ 2026-10-06：正式库里"末条是我发的"的 sid（已回过，防累积库滞后重报）
     for sid, uid, unread, ts in rows:
         name = nm.get(str(uid), str(uid))
         if _is_official(name) or status.get(name) in ("stopped", "skipped", "gift"):
@@ -473,10 +982,51 @@ def pending():
         sender, text, lt, mt = real
         if _is_official_uid(uid, text):        # 官方助手 → 不算待回
             continue
+        # ⭐ 2026-10-06：回填进正式库的**老会话**要套时限（口径同 pending_mem）——
+        #   设备原生会话不在这个分支，行为与改造前逐字节一致。
+        if sid not in _DEVICE_SIDS:
+            _age_h = (time.time() * 1000 - int(lt or 0)) / 3600000.0
+            if _age_h > _MEM_PEND_MAX_H:
+                continue
         if str(sender) != ME:
             # ⭐ 2026-10-03 带出 sid（历史兜底）；⭐ 2026-10-04 再带 msgType（供上层判"该用语音回"）
             out.append(((ts or 0), name, unread, text, lt, sid, mt))
+        else:
+            # ⭐ 2026-10-06：这个会话**末条是我发的** = 已回过。记下来给下面的累积库合并用。
+            #   正式库是**刚从设备 pull 下来的**（最新），累积库 soul_memory.db 由后台同步、
+            #   会滞后（实测 00:45 我发给「匆匆那年」的那句还没同步进去）→ 若只按 sid 去重，
+            #   累积库仍会把她当"待回"并进来 → **对同一个人重复发消息**。
+            answered.add(sid)
     c.close()
+    # ⭐ 2026-10-06 并上**累积库兜底**：Soul 会裁剪本地正式库（实测只剩 14 个 session），
+    #   被裁掉的老会话在正式库里查不到 → 她明明在等回复却报「待回 0 个」。
+    #   只认当前账号 + 末条是她发的 + 冷 ≤24h（见 pending_mem），与正式库按 sid 去重。
+    _from_mem = 0
+    try:
+        _have = {r[5] for r in out}
+        _skip_mem = 0
+        for _r in pending_mem():
+            # ⭐ 2026-10-06 补：兜底分支**也必须按档案状态过滤**。
+            #   正式库那段有 `status.get(name) in stopped/skipped/gift` 过滤，这里漏了
+            #   → 已「停手转人工」(skipped) 的人从累积库照样报成真待回。
+            #   实测 06:57：4 个 skipped 的人（杨三岁/小謎/意中人/甜心姐姐）**永远**占着
+            #   `pending()` → 唤醒一开就「发现 4 个真待回 → 中断」→ **唤醒从没真正发过**，
+            #   待回又永远清不掉 → 切号条件①永远不成立 → 机器整晚空转。
+            if _is_official(_r[1]) or status.get(_r[1]) in ("stopped", "skipped", "gift"):
+                continue
+            # ⭐ 2026-10-06：`_r[5] in answered` = 正式库说"这个会话我已经回过了"
+            #   → 累积库滞后（还没同步到我这句）也不许再报，否则重复发消息。
+            if _r[5] in _have or _r[5] in answered:
+                if _r[5] in answered and _r[5] not in _have:
+                    _skip_mem += 1
+                continue
+            out.append(_r)
+            _have.add(_r[5])
+            _from_mem += 1
+        if _skip_mem:
+            print(f"  （累积库兜底里有 {_skip_mem} 个已在正式库回过 → 跳过，防重复发）")
+    except Exception as e:
+        print(f"  !! 累积库待回合并失败（不影响正式库结果）: {e!r}")
     out.sort(key=lambda z: z[0], reverse=True)
     print("---------- 待回（未读 + 已读未回，数据库口径）----------")
     for ts, name, unread, text, lt, _sid6, _mt in out:
@@ -484,6 +1034,8 @@ def pending():
         tip = "  ← 收尾语，用新话题接" if (text and str(text) in CLOSERS) else ""
         vt = "  🎙语音" if _mt == VOICE_MT else ""
         print(f"  [{flag:>4}] {_fmt(lt)}  {name:<18} 她: {str(text)[:34]}{vt}{tip}")
+    if _from_mem:
+        print(f"  （其中 {_from_mem} 个来自**累积库兜底**：Soul 已从本地正式库裁掉这些会话）")
     print(f"--- 待回 {len(out)} 个 ---")
     return out
 

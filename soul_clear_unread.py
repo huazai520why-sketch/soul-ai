@@ -82,6 +82,71 @@ def badges(path=SHOT):
     return out
 
 
+# ══════════════ 底导航「聊天」tab 的红点（角标）══════════════════
+# 为什么单独做（用户 2026-10-06 口径）：
+#   「匹配之前记得把聊天导航的红点消除完了之后再匹配；
+#     匹配 3 次之后需要检测一下聊天导航那里有没有红点」
+#   —— 底导航「聊天」角标是**全局可见**的"还有未读"信号（在任何主页面都看得到），
+#      比 `soul_im.pending()`（数据库口径）更直接。上面 `badges()` 明确排除了它
+#      （BADGE_Y_MAX=1100），所以这里单独检测。
+#
+# 位置用**截图比例**表示（不绑定逻辑分辨率，窗口截图/整屏截图都能用）：
+#   实测依据：548x1004 截图（含窗口标题栏）里「聊天」角标在 (388,940)；
+#   去掉标题栏换算到纯屏幕 ≈ (x 0.708, y 0.935) —— 角标在 tab 图标右上方。
+NAV_BOX = (0.640, 0.775, 0.885, 0.965)   # x0, x1, y0, y1（占截图宽/高的比例）
+NAV_MIN_PX = 25                          # 红像素 >= 这个数才算"有角标"
+
+
+def _shot_path(path=None):
+    """当前页面截图路径（优先 soul.SHOT —— 多实例会改成 wshot.N.png）。"""
+    if path:
+        return path
+    try:
+        import soul
+        return getattr(soul, "SHOT", None) or SHOT
+    except Exception:
+        return SHOT
+
+
+def nav_badge(path=None):
+    """底导航「聊天」tab 区域内的**红像素数**（0 = 没有角标）。
+
+    ⚠️ 只数像素，**不判断当前在哪个页面**；要做页面判断请用 `nav_dot()`。
+    """
+    from PIL import Image
+    im = Image.open(_shot_path(path)).convert("RGB")
+    W, H = im.size
+    x0, x1 = int(W * NAV_BOX[0]), int(W * NAV_BOX[1])
+    y0, y1 = int(H * NAV_BOX[2]), int(H * NAV_BOX[3])
+    px = im.load()
+    n = 0
+    for y in range(y0, y1):
+        for x in range(x0, x1):
+            if _red(px[x, y]):
+                n += 1
+    return n
+
+
+def nav_dot(min_px=NAV_MIN_PX, path=None):
+    """底导航「聊天」tab 上**有没有**红点 → True / False / **None（判不了）**。
+
+    🔴 返回 None 的场合：**当前不在主框架**（会话页、搜索页、官方号消息页…）——
+      这时底导航根本不在屏幕上，既不能说"有"也不能说"没有"。
+      2026-10-06 血的教训：清红点跑到「官方号消息」页后，旧版把"看不见导航"
+      当成"没有红点"→ 报「已清干净」，实际红点还在、而且人卡在那个页面出不来。
+      守卫沿用本仓库既有约定（soul_reply._on_chat_list / clear_unread.main 同款）：
+        OCR 文本同时含「星球」+「广场」⇒ 底导航可见。
+    """
+    try:
+        import soul_read as rd
+        s = " ".join(t for t, _x, _y in rd.items())
+        if not ("星球" in s and "广场" in s):
+            return None                      # 不在主框架 → 判不了（不是"没有"！）
+    except Exception:
+        return None                          # 读屏失败 → 判不了（绝不误报"没有"）
+    return nav_badge(path) >= min_px
+
+
 def _thumb_hash(path=SHOT):
     """降采样灰度指纹，用来判断"列表有没有真的滚动"（截图有噪点，不能逐像素比）。"""
     from PIL import Image

@@ -36,6 +36,25 @@ NEXT_BTN = "匹配下一个"
 MATCH_ENTRY = ("灵魂匹配", "开始匹配")
 SESSION_HINT = ("交换答案", "礼仪分", "匹配度", "查看主页", "文明聊天")
 
+# ⭐ 2026-10-06（用户：「匹配的时候 OCR 分析一下剩余次数」）
+#   to_planet() 成功时**就地**留一份「星球页那一帧」的 OCR 结果，
+#   上层要读「今日剩余 N 次」就直接复用，不必再截一次图、再识别一次。
+_PLANET_LAST = {"items": None, "ts": 0.0}
+
+
+def planet_quota(max_age=180.0):
+    """上次 to_planet() 成功那帧的配额 → (灵魂剩余, 语音剩余, 用完弹层在不在)。
+
+    sq/vq 为 None = 读不到 = **未知**，调用方**不可**当 0。
+    没进过星球页 / 缓存过期 → 现读当前屏（⚠️ 此刻可能不在星球页）。
+    """
+    try:
+        if _PLANET_LAST["items"] is not None and (time.time() - _PLANET_LAST["ts"]) <= max_age:
+            return soul.soul_quota_left(_PLANET_LAST["items"])
+    except Exception:
+        pass
+    return soul.soul_quota_left(None)
+
 # ⛔ 2026-09-29 用户点名：「模板化」是最高级别的失败（"绝不模板化 —— 最重要"）。
 #    旧实现是一个固定池 —— 实测把**同一句**「这个点还没睡呢」发给了「Un」和「离异带男娃」两个人，
 #    正是复盘点名的群发模式。**池子已删除**。
@@ -319,15 +338,19 @@ def profile_opening(allow_city=False):
 # 待回回复场景不受影响（soul_reply 有自己的话术池，不走这里）。
 # 兜底池刻意朴素（不替她下结论、不丢球、不油腻）；仍走 3 天去重，避免连续多人收到同一句；
 # 若 8 句 3 天内全用过 → **强制发稳定索引那句**（用户铁律优先于去重，绝不留空匹配）。
+# ⭐ 2026-10-06 用户「爽感铁律」：兜底开场白不能是「你好呀」这种干巴巴招呼。
+#   每条都要让她读起来**爽**（有画面／有笑点／有来回钩子／有落差，至少命中 2 个），
+#   且刻意用**身份中立**措辞（不带城市/方言/职业）——本文件不走 soul_persona.rewrite，
+#   带「重庆」类字样会漏到账号2（东北人设）。方言味交给 LLM 主通道去带。
 FALLBACK_OPENINGS = (
-    "你好呀",
-    "嗨 认识一下",
-    "你好 想认识你",
-    "嗨 刚匹配到你",
-    "你好呀 交个朋友",
-    "嗨 有缘刷到你",
-    "你好 聊聊吗",
-    "嗨 你也在玩这个",
+    "刚下班 一身的班味儿",
+    "刷到你这下 我瞌睡都醒了",
+    "我这人嘴笨 但不会让你冷场",
+    "先说好 合不合得来聊了才知道",
+    "你也在刷这个 咱俩挺闲啊",
+    "刚吃完 撑得不想动 来说两句",
+    "难得主动一回 你看着办",
+    "打个招呼 后面靠聊出来的",
 )
 
 
@@ -404,12 +427,32 @@ def to_planet():
             soul.tap(*soul.BACK_XY)
             time.sleep(2.2)
             continue
-        if "soulapp" not in a:
+        # ⭐ 2026-10-06 新增：**非主框架的 soul 子页也必须返回**。
+        #   实测 2026-10-06 05:00 用户报「上次就是这个页面 不动了」→ 截图实锤卡在
+        #   「今日匹配Souler」记录页（**没有底导航**，只有一行日期）。
+        #   它的 Activity 不是 Conversation → 旧逻辑直接 break → 后面 OCR 找不到
+        #   「星球」标签、兜底 tap 坐标也无效（页面上根本没有底导航可点）
+        #   → 连续 no_planet，匹配空转、也到不了唤醒。
+        #   修法：只要是 soulapp 的 Activity 但**不是 MainActivity**（= 还在子页里），
+        #   就按返回退一级；退 4 次仍不行，后面还有 am start 重启兜底。
+        #   风险评估：在 soulapp 内按返回最多退到桌面 → 下轮 ensure_foreground() 会拉回。
+        # ⭐ 2026-10-06 再修：上面这条用裸的 `"soulapp" in a` **漏掉了 RN 页面** ——
+        #   实测 14:11 卡在「搜索韩梦慈的结果列表」页，activity 是
+        #   `cn.soul.android.soul_rn_sdk.multiengine.RnContainerActivity`（**不含 soulapp**）
+        #   → 两个分支都不命中 → 直接 break → 后面 OCR 找不到「星球」/底导航 → 死循环。
+        #   soul.py 里早就有 `_is_soul_activity()`（判包名前缀 `cn.soul`，两种都覆盖），
+        #   注释里甚至专门写过这个坑 —— 这里必须调它，别再手写子串判断。
+        if soul._is_soul_activity(a) and "MainActivity" not in a:
+            soul.tap(*soul.BACK_XY)
+            time.sleep(2.2)
+            continue
+        if not soul._is_soul_activity(a):
             soul.ensure_foreground()
             continue
         break
     items = rd.items()
     if any(any(k in t for k in MATCH_ENTRY) for t, _, _ in items):
+        _PLANET_LAST["items"], _PLANET_LAST["ts"] = items, time.time()
         return True
     hit = next(((cx, cy) for t, cx, cy in items if t.strip() == "星球" and cy > 1150), None)
     if not hit:
@@ -426,10 +469,18 @@ def to_planet():
         time.sleep(3.5)
         items = rd.items()
         if any(any(k in t for k in MATCH_ENTRY) for t, _, _ in items):
+            _PLANET_LAST["items"], _PLANET_LAST["ts"] = items, time.time()
             return True
         return False
     soul.tap(hit[0], hit[1] - 34)
     time.sleep(3.5)
+    # ⭐ 上面 tap 切到了星球 tab，屏幕已变 → 重读一帧再缓存（否则配额读到的是切页前的旧屏）
+    try:
+        items = rd.items()
+        if any(any(k in t for k in MATCH_ENTRY) for t, _, _ in items):
+            _PLANET_LAST["items"], _PLANET_LAST["ts"] = items, time.time()
+    except Exception:
+        pass
     return True
 
 
@@ -439,25 +490,51 @@ def in_session():
 
 
 def partner_name():
-    """读会话页顶部昵称，并截掉粘连的状态词（"点正在线" → "点正"）"""
+    """读会话页顶部昵称，并截掉粘连的状态词（"点正在线" → "点正"）
+
+    ⭐ 2026-10-06 修（P1#8 昵称读成时间戳）：旧版返回**第一个**「cy<200 且 ≤16 字」的元素 →
+      实测顶部噪声（时间戳「14:03」/ 状态词 / 纯标点）常排在昵称前面 → 把时间戳当昵称发开场白。
+      现在：先滤掉时间戳/纯数字/纯标点（正则）、限定 `70<cy<200`（避开最顶状态栏），
+      再**优先匹配设备库 `im.names()`**（真名唯一）；否则取 **y 最小**（最靠顶部=昵称行）。
+    """
     items = rd.items()
     skip = ("关注", "返回", "查看主页", "分钟前", "刚刚", "匹配度")
     PURE_STATUS = ("在线", "离线", "刚刚", "分钟前", "Souler", "对方", "ta", "TA")
+    _re_time = re.compile(r"^\d{1,2}[:：]\d{2}$")     # 时间戳 14:03 / 14：03
+    _re_pure = re.compile(r"^[\d\W_]+$")              # 纯数字 / 纯标点 / 纯符号
+    cands = []
     for t, cx, cy in items:
         s = (t or "").strip()
         if not s or any(k in s for k in skip):
             continue
-        if cy < 200 and len(s) <= 16:
-            for cut in ("在线", "刚刚", "分钟前"):
-                i = s.find(cut)
-                if i > 0:
-                    s = s[:i]
-            # ⚠️ 2026-09-30：昵称行 OCR 整行丢失时只剩状态词（实测返回「在线」）→
-            #    不能把它当昵称（会把开场白发错人/发给陌生人）。
-            if not s or s in PURE_STATUS:
-                continue
-            return s
-    return None
+        if not (70 < cy < 200) or len(s) > 16:
+            continue
+        for cut in ("在线", "刚刚", "分钟前"):
+            i = s.find(cut)
+            if i > 0:
+                s = s[:i]
+        s = s.strip()
+        # ⚠️ 昵称行 OCR 整行丢失时只剩状态词（实测返回「在线」）→ 不能当昵称。
+        if not s or s in PURE_STATUS:
+            continue
+        if _re_time.match(s) or _re_pure.match(s):
+            continue
+        cands.append((s, cy))
+    if not cands:
+        return None
+    # ① 优先设备库真名（唯一可信）
+    try:
+        import soul_im as im
+        dev = set(str(n).strip() for n in (im.names() or []) if str(n or "").strip())
+    except Exception:
+        dev = set()
+    if dev:
+        for s, cy in cands:
+            if s in dev or any(s in d or d in s for d in dev):
+                return s
+    # ② 否则取 y 最小（最靠顶部 = 昵称行）
+    cands.sort(key=lambda z: z[1])
+    return cands[0][0]
 
 
 # ==================== 单次匹配 ====================
@@ -498,9 +575,23 @@ def match_once(opening=None, dry=False, wait_match=30):
         h, rows = interrupted()
         if h:
             return (None, "interrupted_by_msg")
-        if in_session():
+        # ⭐ 2026-10-06（用户口径：「匹配的时候 OCR 分析一下剩余次数」）
+        #   **一次 OCR 同时判两件事**（不再分开调，省一次识别）：
+        #     · 进会话页了吗？            → 匹配成功
+        #     · 浮着「今日免费匹配机会已用完」吗？ → 额度用完，**立刻收手**
+        #   旧行为：不管怎样都空等满 30s 才报 no_match，还要连着 2 轮才敢判"额度耗尽"
+        #   （那是**猜**的）。现在第一次点到弹层就 100% 确定用完 —— 弹层文字是读出来的。
+        try:
+            _it = rd.items()
+        except Exception:
+            _it = []
+        if any(any(k in t for k in SESSION_HINT) for t, _, _ in _it):
             got = True
             break
+        _qk = getattr(soul, "QUOTA_KEYS", ())
+        if _qk and any(any(k in (t or "") for k in _qk) for t, _, _ in _it):
+            print("  ⛔ 点出「今日免费匹配机会已用完」弹层 → 额度确实用完（读出来的，不是猜的）→ 立刻收手")
+            return (None, "no_quota")
     if not got:
         return (None, "no_match")
 
@@ -525,23 +616,33 @@ def match_once(opening=None, dry=False, wait_match=30):
 
 def match_batch(n=3, dry=False):
     """匹配 n 个。**任一检查点发现新消息就立刻中断**。
-    返回 (已匹配名单, 结束原因)；pending = 被打断，该去回消息了
+    返回 (已匹配名单, 结束原因, 每次尝试的细分原因列表)
+      why ∈ pending（被新消息打断）/ done（跑完 n 次）
+      reasons = match_once 每次未成功的 res，如 ["no_planet","no_planet","no_planet"]
+
+    ⭐ 2026-10-06 新增第 3 个返回值（细分原因）—— 修的 bug：
+      daemon 只看「匹配到几个」，`0 个` 一律记成「额度/候选耗尽 → 转唤醒」。
+      实测 00:34 连续 3 次 `no_planet`（**压根没进到星球页**，连匹配按钮都没点到），
+      却被报成"额度耗尽"，白白放弃了本轮匹配。细分原因让上层能区分：
+        · 导航类（no_planet / no_button）= 页面没摆正，**不是额度问题** → 应重试
+        · no_match = 点了匹配但没出结果 → 才可能是额度/候选耗尽
     """
-    done = []
+    done, reasons = [], []
     for k in range(1, n + 1):
         h, rows = interrupted()
         if h:
-            return (done, "pending")
+            return (done, "pending", reasons)
         print(f"[{k}/{n}] 匹配中…")
         name, res = match_once(dry=dry)
         if res == "interrupted_by_msg":
-            return (done, "pending")
+            return (done, "pending", reasons)
         if name:
             done.append(name)
         else:
+            reasons.append(res)
             print(f"  未匹配到（{res}）")
         time.sleep(1.5)
-    return (done, "done")
+    return (done, "done", reasons)
 
 
 if __name__ == "__main__":
@@ -555,7 +656,7 @@ if __name__ == "__main__":
         globals()["_FORCE"] = True
         print("⚠️ --force：跳过待回检查（仅用于被不可达对象卡死时，勿常态用）")
     print(f"=== 匹配 {n} 个（dry={dry}）===")
-    names, why = match_batch(n, dry=dry)
-    print(f"--- 完成 {names} | 结束原因: {why} ---")
+    names, why, reasons = match_batch(n, dry=dry)
+    print(f"--- 完成 {names} | 结束原因: {why} | 细分: {reasons} ---")
     if why == "pending":
         print("⚠️ 被新消息打断 → 上层应立刻去回复，完事再回到匹配")

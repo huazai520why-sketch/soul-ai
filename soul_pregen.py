@@ -35,7 +35,16 @@ if BASE not in sys.path:
 os.environ.setdefault("OLLAMA_HOST", "192.168.10.210:11434")
 
 PRGEN_DIR = os.path.join(BASE, "_uimap", "daemon", "pregen")
-MEMDB = os.path.join(BASE, "soul_memory.db")
+def _memdb():
+    """累积库路径 —— ⭐ 2026-10-05 按当前登录账号解析（切号后立即换文件）。"""
+    try:
+        import soul_acct
+        return soul_acct.path(BASE, "soul_memory.db")
+    except Exception:
+        return os.path.join(BASE, "soul_memory.db")
+
+
+MEMDB = _memdb()      # 兼容快照
 POOL_MAX = 15          # 圈人上限（每人预生成 2 条 → 一天最多 30 条池内候选）
 CAND_PER = 2           # 每人预生成条数
 ACTIVE_H = 72          # 圈人窗口：最近 72h 内有真人往来的会话
@@ -101,7 +110,7 @@ def _snapshot_memdb():
     tmp = os.path.join(PRGEN_DIR, "_mem_snapshot.db")
     try:
         _mkdir()
-        shutil.copy2(MEMDB, tmp)
+        shutil.copy2(_memdb(), tmp)
         return tmp
     except Exception:
         return None

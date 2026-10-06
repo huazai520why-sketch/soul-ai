@@ -57,12 +57,16 @@ DEV_W, DEV_H = 900, 1600          # 兜底（calibrate() 会用 `wm size` 覆盖
 
 # ⭐ 底导航一行 5 个 tab 的比例取自**本轮 OCR 真值**（y 全在 1585/1600）：
 #   星球 x=102 / 广场 x=287 / 聊天 x=615 / 自己 x=802（y=1585）
+# ⭐ 2026-10-05 20:10 修正：540×960 实测底导航条 y 像素 933~950（千分比 972~990），
+#   中心 ≈941 → 比例 0.9807。原 0.9906（→951px）落在导航条下缘/系统手势区，
+#   发送链路 tap 聊天 tab 触发手势/返回 → 进会话失败 → 卡 ~3min 报"发送未成功"
+#   （18:53 与 20:06 两次同模式失败实证）。统一改 y=0.9780（540×960→939px，导航条内）。
 _FRAC = {
-    "planet": (0.1133, 0.9906),
-    "square": (0.3189, 0.9906),
-    "plus":   (0.5011, 0.9844),
-    "chat":   (0.6833, 0.9906),
-    "me":     (0.8911, 0.9906),
+    "planet": (0.1133, 0.9780),
+    "square": (0.3189, 0.9780),
+    "plus":   (0.5011, 0.9720),
+    "chat":   (0.6833, 0.9780),
+    "me":     (0.8911, 0.9780),
     "box":    (0.5689, 0.9400),    # 输入框
     "send":   (0.8822, 0.9488),    # 发送按钮（6.38.5）
     "back":   (0.0689, 0.0819),    # 左上角返回箭头
@@ -102,19 +106,12 @@ def calibrate():
     except Exception:
         pass
     if not (w and h):
-        # ⭐ 2026-10-05 治本（用户整上午"发送未成功"的终极根因）：
-        #   MuMu 15 的 `wm size` 经常无输出（shell 权限/服务抽风）→ DEV 保持默认
-        #   900x1600，而实例 0 实际是 540x960 → 坐标全歪 → tap 聊天 tab 点到底部
-        #   导航栏 → Soul 切后台（Launcher）→ 导航全挂、回复全失败。
-        #   用窗口截图实测尺寸兜底（screenshot 每次必成功）。
-        try:
-            p = screenshot(force=True)
-            if p and os.path.exists(p) and os.path.getsize(p) > 5000:
-                import PIL.Image
-                im = PIL.Image.open(p)
-                w, h = im.size
-        except Exception:
-            pass
+        # ⭐ 2026-10-06 修（P1#7 坐标空间双兜底）：**删除「用窗口截图尺寸兜底」**。
+        #   旧版（2026-10-05）读不到 `wm size` 时拿**窗口截图**尺寸当设备尺寸 —— 但
+        #   `tap` 走的是**设备空间**，而窗口截图（MuMu 15 实测 533x948）与设备（900x1600）
+        #   **不是 1:1** → 坐标被系统性算小，屏幕越往下偏得越多 → 点到底部导航、误触真人主页。
+        #   改为常量回退（10-05 实测 `wm size`=900x1600）——绝不拿截图尺寸冒充设备空间。
+        w, h = 900, 1600
     if w and h:
         DEV_W, DEV_H = int(w), int(h)
         _LAST_CALIBRATED["w"], _LAST_CALIBRATED["h"] = DEV_W, DEV_H
@@ -400,6 +397,17 @@ _DISP_CACHE = {"d": None, "ts": 0.0}
 SHOT_CACHE_TTL = float(os.environ.get("SOUL_SHOT_TTL", "0.35"))   # 秒；0 = 关闭缓存
 _SHOT_CACHE = {"ts": 0.0}
 
+# ⭐ 2026-10-05 晚：截图**主通道**可选（默认 winshot）。
+#   背景：MuMu 内置截图会把每一张 PNG 落到它的共享文件夹
+#   （`C:\Users\JIAN\Documents\MuMu共享文件夹\Screenshots`）——
+#   MuMu 没有独立"截图保存路径"设置，该目录是从共享文件夹派生的
+#   （`ScreenshotPresenterImpl::getScreenshotFloderPath`）→ 一天灌 377 张 / 95.8MB，
+#   C 盘只剩 20%。而且实测每张 ~1.33s、会闪屏（用户观感＝"疯狂截图"）。
+#   winshot 直接写 `SHOT`（E:\soul\wshot.png），不落共享文件夹、更快、不闪屏；
+#   代价是窗口截图 533x948（内置为 900x1600 原生），极小字 OCR 略吃亏。
+#   要换回 MuMu 原生通道：设 SOUL_SHOT_PRIMARY=mumu 再重启 daemon 即可。
+_SHOT_PRIMARY = os.environ.get("SOUL_SHOT_PRIMARY", "winshot").strip().lower()
+
 # 「聊天列表已滚到顶」进程内状态： avoid 重复回顶（_scroll_top 一次要几十秒）
 _TOP_STATE = {"at_top": False}
 
@@ -436,28 +444,57 @@ def at_top():
 def _display_locate():
     """定位 Soul 当前所在 display（一次尝试）。失败返回 None。
 
-    ⭐ 2026-10-05 实测：MuMu 15 上 dumpsys activity 会列出多个 Display（#40/#41/#0），
-       Soul 的 topResumedActivity 行所在块才是真号；#0 是桌面。
-       原 fallback（dumpsys window windows 找 mDisplayId）在 Android 15 格式下
-       **会把 mDisplayId=0 错配给 Soul 窗口** → tap -d 0 = 点击全部打到桌面
-       （"页面异常/导航失败"假象）。已删除该 fallback：activity 抽风时
-       由 display() 的缓存回退兜住，宁可放弃本轮也不打桌面。
+    ⭐ 2026-10-05 22:21 根治实测：MuMu 15 `dumpsys window windows` 中
+       Soul 的 Window 行（`Window{... cn.soulapp.android/...}:`）**下一行**
+       的 `mDisplayId=N` 是权威号（实测 26→29→2 全部命中）。
+       此前注释所称"window fallback 错配 mDisplayId=0"是解析 bug（取了
+       Window 行自身而非下一行），并非通道不可用。
+       ⭐ 同时把 customer_config.json 的 display_setting.multi_tag.mode
+       从 1 改为 0 后，display 号实测稳定为 2（连续 4 次 am start 不变），
+       漂移被治本；此处 window 定位作为第一通道，activity 解析降为兜底。
     """
+    # 第一通道：dumpsys window windows 权威 mDisplayId
+    out = sh("dumpsys window windows 2>/dev/null")
+    lines = out.splitlines()
+    zero_hit = None
+    for i, ln in enumerate(lines):
+        if "soulapp" in ln.lower() and "Window{" in ln and ":" in ln:
+            for j in range(i + 1, min(i + 4, len(lines))):
+                m = re.search(r"mDisplayId=(\d+)", lines[j])
+                if m:
+                    d = m.group(1)
+                    if d != "0":      # 虚拟屏号优先（多屏模式）
+                        return d
+                    zero_hit = d      # ⭐ 单屏模式：先记下，扫完所有候选再定
+                    break
+    # ⭐ 2026-10-05 晚 根治（单屏模式瘫痪）：MuMu 重装后只剩一块屏
+    #   （SurfaceFlinger 只有 mumuscreen000 / HWC display 0），Soul 窗口
+    #   mDisplayId 恒为 0。旧逻辑「0=桌面则继续找下一候选」会一路找不到 →
+    #   display()=None → daemon「拒绝所有点击」整夜空转（实测 22:37：
+    #   Soul 前台且 Surface shown=true，display() 仍 None）。
+    #   此时 0 就是 Soul 的真实屏 → 采用它。多屏模式下上面已 return 非 0，
+    #   本兜底不会触发，行为与改前一致。
+    if zero_hit is not None:
+        return zero_hit
+    # 第二通道（兜底）：dumpsys activity 的 Display 块归属
     out = sh("dumpsys activity activities 2>/dev/null")
     d = None
     cur = None
+    fallback = None
     for line in out.splitlines():
         m = re.search(r"Display #(\d+)", line)
         if m:
             cur = m.group(1)
-        # ⭐ 2026-10-05 治本：只认 topResumedActivity 行且包名必须带 cn.soulapp.android。
-        #   此前 "MainActivity"/"Resumed:" 宽匹配会把 Display #0（桌面）块里的
-        #   * Task{} / * Hist #0 历史记录行命中 → 拿到 0 → 点击全打桌面。
-        if "cn.soulapp.android" in line and cur is not None:
+        if "cn.soulapp.android" in line and cur is not None and cur != "0":
             m2 = re.search(r"topResumedActivity=.*?cn\.soulapp\.android", line)
             if m2:
                 d = cur
                 break
+            if "Resumed:" in line or "cn.soulapp.android/.component" in line:
+                fallback = cur
+    if d is None and fallback is not None:
+        print(f"  [debug] topResumedActivity 未命中 → 回退候选 display={fallback}")
+        d = fallback
     return d
 
 
@@ -496,28 +533,51 @@ def display(refresh=False, max_age=120):
 
 
 _ADB_ROOT_DONE = {}
+# ⭐ 2026-10-06 修复（用户质疑「有人没回复」的**最深层原因**）：
+#   旧版 `_ADB_ROOT_DONE["once"]` 让 root 检查**每个进程只做一次**。
+#   实测 00:50 MuMu 抖过一次后 adbd 掉回 uid=2000(shell) → 之后**整条链路**的
+#   `im.pull()` 全部失败（`ls /data/data/.../databases` 读不到 → 报
+#   「读不到设备库目录（MuMu 未启动 / display 未就绪）」，措辞还把人带偏）。
+#   后果：本地库停在旧快照 →「库里没聊过这个昵称」→ 搜索通道**拒发真人**；
+#   发送校验读不到新消息 → 误报失败。而 adbd 是否 root 会随 MuMu 重启/抖动**反复变化**。
+#   ⇒ 必须**带 TTL 周期性复核**（2 分钟），并在 pull 落空时**强制复核一次**。
+_ADB_ROOT_TTL = float(os.environ.get("SOUL_ADB_ROOT_TTL", "120"))
 
-def _adb_ensure_root():
+
+def _adb_ensure_root(force=False):
     """⭐ 2026-10-05：MuMu 重启后 adbd 常以 shell 身份跑（uid=2000），
     /data/data 读不到 → im.pull / verify_sent 全部失败（实测"发送未成功"）。
-    用 `adb root` 自愈；每个进程只做一次（root 后 adbd 重启，连接自动恢复）。"""
+    用 `adb root` 自愈。
+
+    ⭐ 2026-10-06：改为**带 TTL 的周期性复核**（旧版每进程只查一次 → adbd 掉权后
+    永远不再自愈，是 00:50 起 pull 全败的根因）。`force=True` 供 pull 落空时立即抢救。
+    """
     try:
         adb = _find_adb()
-        if _ADB_ROOT_DONE.get("once"):
+        now = time.time()
+        if (not force and _ADB_ROOT_DONE.get("once")
+                and now - float(_ADB_ROOT_DONE.get("ts") or 0.0) < _ADB_ROOT_TTL):
             return True
         s = _adb_serial() or f"127.0.0.1:{_adb_port()}"
         out = _run_hard([adb, "-s", s, "shell", "id"], timeout=8) or ""
         if "uid=0" in out:
             _ADB_ROOT_DONE["once"] = True
+            _ADB_ROOT_DONE["ts"] = now
             return True
+        print(f"  ⚡ adbd 非 root（id={out.strip()[:28]}）→ 执行 adb root 自愈"
+              f"（读 /data/data 数据库必须 root）")
         _run_hard([adb, "-s", s, "root"], timeout=10)
         time.sleep(3)                                  # adbd 重启窗口
         _ADB_SERIAL["s"] = None                        # root 后重解析 serial
         s2 = _adb_serial() or f"127.0.0.1:{_adb_port()}"
         out2 = _run_hard([adb, "-s", s2, "shell", "id"], timeout=8) or ""
-        _ADB_ROOT_DONE["once"] = "uid=0" in out2
-        return _ADB_ROOT_DONE["once"]
-    except Exception:
+        ok = "uid=0" in out2
+        _ADB_ROOT_DONE["once"] = ok
+        _ADB_ROOT_DONE["ts"] = time.time()
+        print(f"  ⚡ adb root {'成功' if ok else '**失败**'}（id={out2.strip()[:28]}）")
+        return ok
+    except Exception as e:
+        print(f"  !! adb root 自愈异常: {e!r}")
         return False
 
 
@@ -667,12 +727,15 @@ def app_running(pkg="cn.soulapp.android"):
     return pkg in sh(f"ps -A | grep {pkg}")
 
 
-def _wait_display(timeout=25):
+def _wait_display(timeout=40):
     """循环等待 Soul resumed 就绪（冷启动/重启后 topResumedActivity 迟现）。
 
     ⭐ 2026-10-05：Soul 冷启动到 resumed 需 10-15s，display(refresh=True) 的
        3 次重试（约 6s）不够 → 定位 None → 整轮放弃。这里每 2.5s 重查，
        最长 timeout 秒，拿到号即返回；超时返回 None。
+    ⭐ 2026-10-05 加固：MuMu 虚拟屏漂移期（5→8→9）dumpsys 间歇抽风，
+       18s 等不到是常态 → 延长到 40s；且超时后**回退缓存**（如果有），
+       绝不因为一次抽风就整轮放弃。
     """
     t0 = time.time()
     while time.time() - t0 < timeout:
@@ -682,6 +745,10 @@ def _wait_display(timeout=25):
             _DISP_CACHE["ts"] = time.time()
             return d
         time.sleep(2.5)
+    # ⭐ 2026-10-05：超时后回退缓存（虚拟屏漂移期宁可信旧号也不放弃）
+    if _DISP_CACHE["d"] is not None:
+        print(f"  !! 等不到 Soul resumed（{int(timeout)}s）→ 回退缓存 display={_DISP_CACHE['d']}")
+        return _DISP_CACHE["d"]
     print(f"  !! 等不到 Soul resumed（{int(timeout)}s）→ display 定位放弃")
     return None
 
@@ -845,6 +912,19 @@ def close_kid_popup():
         if not (kid or btn):
             return True                      # 没有弹窗 / 已经关掉 → 完成
         pos = btn or KID_BTN
+        if not btn and not on_main():
+            # 🔴 2026-10-06 修复「盲点把人带沟里」（实测 PostDetailActivity 连环事故）：
+            #   平论/帖子正文里可能**恰好**含「未成年模式」字样（实测某帖 OCR 出
+            #   'Soul未成年模式' + '为呵护未成年人健康成长…'），此时：
+            #     · OCR 读不到「我知道了」按钮 → btn=None
+            #     · 但 kid=True → 旧代码用兜底坐标 KID_BTN **盲点一击**
+            #   若该页根本不是弹窗（是帖子详情/广场 feed），这一击就点到别的东西 →
+            #   页面越走越偏（00:49 实测：落到 Lawnchair → 再拉起 → PostDetailActivity）。
+            #   策略：**读不到按钮文字时，只在主框架内**才允许兜底盲点（弹窗只出现在主框架）。
+            #   非主框架 → 直接不点，交给上层导航纠正页面。
+            print(f"  ⚠ 见到「未成年」字样但读不到「我知道了」，且当前非主框架"
+                  f"（{activity() or '未知'}）→ **不盲点**（疑似帖子正文含该词，非弹窗）")
+            return True
         print(f"  🧹 检测到「未成年模式」弹窗（盖住底导航）→ 点「我知道了」{pos}"
               + ("" if i == 0 else "（第 %d 次）" % (i + 1)))
         tap(*pos)
@@ -956,6 +1036,31 @@ def ensure_foreground(wait=8):
     return _is_soul_activity(activity())
 
 
+def ensure_replyable(max_n=4, wait=2.0):
+    """回复/私聊前确保**页面可用**：MainActivity（会话列表）或 Conversation（会话页）。
+
+    ⭐ 2026-10-06 新增。为什么需要它：
+      `ensure_foreground()` 只判「是不是 Soul」，**不判是不是主框架** → 停在
+      RN 子页（搜索结果 / 用户主页 / 匹配记录页）它也认为正常，于是回复流程
+      在这些页面上找不到输入框 → 反复 OCR → 卡死不动。
+      实测 14:11 卡在「搜索『韩梦慈』的结果列表」页
+      （`cn.soul.android...RnContainerActivity`，满屏「私聊」按钮）整整几分钟没输出。
+    判据：允许 MainActivity / Conversation；其他 Soul 页面 → 逐级按返回退出。
+    """
+    for _ in range(max_n):
+        a = activity() or ""
+        if not _is_soul_activity(a):
+            ensure_foreground()
+            continue
+        if "MainActivity" in a or "Conversation" in a:
+            return True
+        print(f"  ↩ 停在 Soul 子页（{a.split('.')[-1]}）→ 按返回退出")
+        tap(*BACK_XY)
+        time.sleep(wait)
+    a = activity() or ""
+    return ("MainActivity" in a) or ("Conversation" in a)
+
+
 def ensure_ready(wait=8, auto_bell=True):
     """一站式前置：Soul 前台 + （默认）优先处理奇遇铃。
 
@@ -993,7 +1098,15 @@ def is_love_bell():
 
 
 def love_bell_name():
-    """读奇遇铃卡片上的对方昵称（标题行下方、按钮上方那段文字）"""
+    """读奇遇铃卡片上的对方昵称（标题行下方、按钮上方那段文字）
+
+    ⭐ 2026-10-06 修（P1#4 奇遇铃发不出·根因②）：旧实现「170<y<btn_y 且 ≤16 字」太宽 →
+      实测把卡片上的**时间戳/状态词/提示语**当成昵称发过去（发错人）。现在：
+        ① 候选优先**能匹配设备 `im.names()`** 的真名（唯一可信）；
+        ② 否则只在按钮上方 `[btn_y-320, btn_y-160]` 的**水平居中、非时间/状态/提示语**里
+           取**最长**那项（昵称行比提示语更长、且居中）；
+        ③ 全失败 → `None`（fail-closed，**绝不猜人**）。
+    """
     try:
         import soul_read as rd
     except Exception:
@@ -1001,16 +1114,50 @@ def love_bell_name():
     items = rd.items()
     btn_y = None
     for t, cx, cy in items:
-        if "立即私聊" in t:
+        if "立即私聊" in (t or ""):
             btn_y = cy
             break
+    if not btn_y:
+        return None
+    _bad = ("分钟前", "小时前", "刚刚", "在线", "离线", "km", "KM", "公里",
+            "同城", "匹配", "距离", "活跃", "最近", "打招呼", "私聊", "聊天",
+            "关注", "主页", "查看")
+    _re_time = re.compile(r"^\d{1,2}[:：]\d{2}$")
+    _re_pure = re.compile(r"^[\d\W_]+$")
+
+    def _clean(s):
+        s = (s or "").strip()
+        if not s or len(s) > 16:
+            return None
+        if any(k in s for k in BELL_SKIP) or any(k in s for k in _bad):
+            return None
+        if _re_time.match(s) or _re_pure.match(s):
+            return None
+        return s
+
+    cands = []
     for t, cx, cy in items:
-        s = (t or "").strip()
-        if not s or any(k in s for k in BELL_SKIP):
-            continue
-        # 昵称在标题(y≈144)与按钮之间；排版上比提示语更短
-        if 170 < cy < (btn_y or 500) and len(s) <= 16:
-            return s
+        s = _clean(t)
+        if s:
+            cands.append((s, cx, cy))
+    # ① 真名优先：能对上设备库 `im.names()`
+    try:
+        import soul_im as im
+        dev = set(str(n).strip() for n in (im.names() or []) if str(n or "").strip())
+    except Exception:
+        dev = set()
+    if dev:
+        for s, cx, cy in cands:
+            if s in dev or any(s in d or d in s for d in dev):
+                return s
+    # ② 否则：按钮上方 [btn_y-320, btn_y-160]、水平居中、取最长
+    lo, hi = btn_y - 320, btn_y - 160
+    zone = [(s, cx, cy) for s, cx, cy in cands if lo <= cy <= hi]
+    mid = (DEV_W or 900) / 2.0
+    centered = [z for z in zone if abs(z[1] - mid) <= (DEV_W or 900) * 0.30]
+    if centered:
+        centered.sort(key=lambda z: -len(z[0]))
+        return centered[0][0]
     return None
 
 
@@ -1040,9 +1187,71 @@ def accept_love_bell(wait=4):
     return (name, True)
 
 
-# ============================ 截图（窗口级）============================
+# ============================ 截图（MuMu 内置截图优先）============================
+# ⭐ 2026-10-05：主通道改为 **MuMu 官方内置截图**（mumu-cli tool func screenshot），
+#   走模拟器自身渲染管线，天然包含虚拟屏(App)内容、分辨率 540x960 与坐标一致、
+#   不依赖窗口句柄枚举/BitBlt（解决 hwnd 漂移与渲染管线坏死的两类历史故障）。
+MUMU_SHOTS = r"C:\Users\JIAN\Documents\MuMu共享文件夹\Screenshots"
+
+
+def _mumu_shot(path, retry=2):
+    """MuMu 内置截图：mumu-cli 触发截图按钮 → Screenshots 出现新文件 → 复制到 path。
+    失败（目录不可用/未出新文件）返回 False，由调用方回退 winshot。"""
+    try:
+        before = 0.0
+        if os.path.isdir(MUMU_SHOTS):
+            fs = [f for f in os.listdir(MUMU_SHOTS) if f.lower().endswith(".png")]
+            if fs:
+                before = max(os.path.getmtime(os.path.join(MUMU_SHOTS, f)) for f in fs)
+    except Exception:
+        before = 0.0
+    for _ in range(retry + 1):
+        try:
+            _run([MUMU_CLI, "control", "--vmindex", str(VMI),
+                  "tool", "func", "--name", "screenshot"], timeout=30)
+        except Exception:
+            pass
+        for _w in range(10):  # 轮询最多 10s 等新截图落盘
+            time.sleep(1)
+            try:
+                if not os.path.isdir(MUMU_SHOTS):
+                    continue
+                fs = [(os.path.getmtime(os.path.join(MUMU_SHOTS, f)),
+                       os.path.join(MUMU_SHOTS, f))
+                      for f in os.listdir(MUMU_SHOTS) if f.lower().endswith(".png")]
+                if fs:
+                    m, latest = max(fs)
+                    if m > before and os.path.getsize(latest) > 5000:
+                        # ⭐ 2026-10-05 晚 修复「疯狂截图」的一半根因：
+                        #   MuMu 的 PNG 是**异步落盘**的 —— 文件刚出现时只有头部+部分数据，
+                        #   大小早就 >5000，旧代码直接 copyfile 会拿到**半截 PNG**，
+                        #   PIL 随即报 `image file is truncated (0 bytes not processed)`
+                        #   → OCR 全瞎 → 下游"找不到人" → 滑+截图死循环重试（实测 25 轮×2）。
+                        #   这里先等文件大小稳定，再用 .part + 原子改名落盘，杜绝半截帧。
+                        sz = os.path.getsize(latest)
+                        stable = False
+                        for _s in range(8):              # 最多再等 1.2s
+                            time.sleep(0.15)
+                            sz2 = os.path.getsize(latest)
+                            if sz2 == sz:
+                                stable = True
+                                break
+                            sz = sz2
+                        if not stable or os.path.getsize(latest) <= 5000:
+                            continue                     # 还在写 / 异常 → 下一轮再取
+                        tmp = path + ".part"
+                        shutil.copyfile(latest, tmp)
+                        os.replace(tmp, path)            # 原子替换，读者永远看不到半截
+                        _SHOT_CACHE["ts"] = time.time()
+                        return True
+            except Exception:
+                pass
+    return False
+
+
 def screenshot(path=None, retry=2, force=False):
-    """截 MuMu 窗口 → PNG。Soul 在独立 display，screencap 拿不到，必须走窗口截图。
+    """截 MuMu 画面 → PNG。
+    ⭐ 2026-10-05 通道顺序：MuMu 内置截图（官方管线）→ winshot（BitBlt 兜底）→ adb screencap 最后兜底。
 
     ⭐ 2026-09-30 提速：加**进程内短缓存**（默认 0.35s）。
     一轮里 `rd.items()` 与显式 `soul.screenshot()` 经常在同一瞬间被连着调用
@@ -1061,6 +1270,15 @@ def screenshot(path=None, retry=2, force=False):
         # ↑ 最后一条：PNG 若被**别的进程**写新（本机存在并发实例），
         #   缓存视为过期重截 —— 防止读到别人操作前的旧帧（串台级风险）
         return path
+    # ⭐ 2026-10-05 晚：通道顺序按 _SHOT_PRIMARY 走（默认 winshot 主 / MuMu 内置兜底）。
+    #   winshot：写 E:\soul\wshot.png，不落共享文件夹、更快、不闪屏。
+    #   MuMu 内置：900x1600 原生、OCR 小字更准，但每张吃一次共享文件夹写入 + 闪屏。
+    if _SHOT_PRIMARY == "mumu":
+        # 老行为：MuMu 内置截图优先（官方渲染管线，含虚拟屏 App 内容）
+        if _mumu_shot(path, retry=retry):
+            _WINSHOT_FAIL["ts"] = 0.0      # 内置截图健康 → 清 winshot 冷却
+            return path
+    # 主/兜底 A：winshot（BitBlt 渲染窗口；hwnd 每次开机变，_enum_win 动态找）
     ws = os.path.join(BASE, "winshot.py")
     tried_winshot = False
     if time.time() - _WINSHOT_FAIL["ts"] > _WINSHOT_COOLDOWN:
@@ -1076,11 +1294,13 @@ def screenshot(path=None, retry=2, force=False):
             time.sleep(0.8)
         _WINSHOT_FAIL["ts"] = time.time()          # winshot 本轮失败 → 进冷却
     # （冷却期内直接落到下面，不再试 winshot）
-    # ⭐ 2026-10-05：宿主渲染窗口全黑（MuMuNxMain 渲染管线坏死）时，
-    #   winshot 拿不到帧 → 切 adb screencap 从 guest 内部取帧。
-    #   ⭐ 2026-10-05：导航/切页时 display 瞬变（HWC id 漂移），adb 兜底偶发失败 → 重试 2 次
+    # 兜底 B：MuMu 内置截图（900x1600 原生；_SHOT_PRIMARY=mumu 时上面已试过，不重复试）
+    if _SHOT_PRIMARY != "mumu" and _mumu_shot(path, retry=retry):
+        return path
+    # ⭐ 2026-10-05：最后兜底 adb screencap（只能截 Display#0 桌面，MuMu 虚拟屏场景
+    #   基本无用，仅当内置截图+winshot 全挂时尝试，避免完全无帧）
     ok_shot = False
-    for _ in range(3):
+    for _ in range(2):
         if _adb_screencap(path):
             ok_shot = True
             break
@@ -1088,7 +1308,7 @@ def screenshot(path=None, retry=2, force=False):
     if ok_shot:
         _SHOT_CACHE["ts"] = time.time()
         return path
-    print(f"!! 截图失败: {r[:150] if tried_winshot else 'winshot 冷却跳过 + adb 兜底失败'}")
+    print(f"!! 截图失败: 内置+winshot{'（冷却跳过）' if not tried_winshot else ''}+adb 全挂")
     return None
 
 
@@ -1177,6 +1397,210 @@ def require_page(expected, nav_to=None):
 
 def show(ns=None, only_text=False):
     print("!! show() 不可用（无 UI 树）；请用 screenshot() 看界面，或 soul_im.py 读消息")
+
+
+# ═══════════════ 账号切换 / 星球匹配额度（2026-10-05）═══════════════
+# 用户教的切号 SOP（实测确认）：
+#   ① 底部导航「自己」 → ② 左上角那个小人 → ③ 「切换账号」页点目标账号行
+# 实测标定（device 900x1600）：
+#   · 左上角小人 ≈ (62, 100)   —— 见 _step1_me.png（左上角人形图标）
+#   · 「切换账号」页：标题 y≈93；账号行 y≈202(第1行) / 333(第2行)，行左头像 x≈84、整行可点
+#   · 星球页额度：「灵魂匹配/今日剩余N次」在左、「语音匹配/今日剩余N次」在右
+# ⚠️ 确认当前账号**不要**用本模块的 OCR —— 用 soul_im.prefs_identity()（App 自己写的，即时准确）。
+ACC_SWITCH_ICON = (62, 100)      # 自己页：左上角小人
+ACC_ROW_X = 250                  # 切换账号页：点整行的安全 x（避开右侧「管理」）
+QUOTA_RE = r"今日剩余\s*(\d+)\s*次"
+
+
+def _rd_mod():
+    import soul_read
+    return soul_read
+
+
+def to_main(max_n=4, wait=2.0):
+    """强制回到 **MainActivity**（底导航可见）。
+
+    ⭐ 2026-10-06 新增。切号前**必须**先调它：
+      「切换账号」入口在底导航「自己」→ 会话页/搜索页/用户主页**都没有底导航**，
+      直接按坐标点会落空 → 「没进到切换账号页（OCR 没看到标题）」→ 切号失败。
+      实测 14:28 强制切号就是这样失败的（当时刚被奇遇铃带进会话页）。
+    """
+    for _ in range(max_n):
+        a = activity() or ""
+        if not _is_soul_activity(a):
+            ensure_foreground()
+            continue
+        if "MainActivity" in a:
+            return True
+        print(f"  ↩ 回到主框架：当前 {a.split('.')[-1]} → 按返回")
+        tap(*BACK_XY)
+        time.sleep(wait)
+    return "MainActivity" in (activity() or "")
+
+
+def acct_switch_open(wait=2.6):
+    """进入「切换账号」页。返回 True = 页面 OCR 里看到了「切换账号」。"""
+    ensure_foreground()
+    # ⭐ 2026-10-06：先回主框架 —— 会话页/子页没有底导航，点 TAB_ME 会落空
+    if not to_main():
+        print("  !! to_main 失败（仍在子页）→ 切号入口可能点不到")
+    time.sleep(0.5)
+    tap(*TAB_ME)
+    time.sleep(wait)
+    tap(*ACC_SWITCH_ICON)
+    time.sleep(wait)
+    try:
+        return any("切换账号" in (t or "") for t, _x, _y in _rd_mod().items())
+    except Exception:
+        return False
+
+
+def acct_switch_rows():
+    """「切换账号」页的账号行 → [(昵称, y)]（按 y 升序）。读不到返回 []。"""
+    out = []
+    try:
+        for t, _x, y in _rd_mod().items():
+            t = (t or "").strip()
+            if not t or t in ("切换账号", "管理", "添加账号", "＋"):
+                continue
+            if y < 140 or y > 1000:      # 只在账号行区域（避开标题栏/底部导航）
+                continue
+            out.append((t, y))
+    except Exception:
+        pass
+    out.sort(key=lambda z: z[1])
+    return out
+
+
+def acct_switch_pick(nickname, wait=3.0):
+    """在「切换账号」页点目标账号行。返回 True = 点到了。
+
+    优先按 OCR 到的昵称行定位；找不到再退回固定行坐标（2 个号的稳定布局）。
+    """
+    nick = (nickname or "").strip()
+    key = nick[:4] if len(nick) >= 4 else nick
+    rows = acct_switch_rows()
+    hit = None
+    if key:
+        for t, y in rows:
+            if key in t or t in nick:
+                hit = (ACC_ROW_X, y)
+                break
+    if not hit and rows:
+        # 目标不在页面上（可能还没加载/滚动）→ 不瞎点
+        return False
+    if not hit:
+        # ⭐ 2026-10-06 兜底（P1#11）：OCR **完全读不出任何账号行**（rows==[]），但页面标题
+        #   确为「切换账号」→ 按 `_acct.accounts()` 的序号 i 点固定行坐标
+        #   （实测行 y=206 / 332，行距 126）。**点完仍必须由 prefs 校验放行**
+        #   （见 soul_daemon._do_switch_account 第③步）：坐标点歪也切不走，不会切错号；
+        #   标题对不上则一律不点（绝不瞎点别的页面）。
+        try:
+            _its = [(t or "") for t, _x, _y in _rd_mod().items()]
+        except Exception:
+            _its = []
+        if not any("切换账号" in t for t in _its):
+            return False
+        try:
+            import soul_acct as _acct
+            _accts = _acct.accounts()
+        except Exception:
+            _accts = []
+        for i, a in enumerate(_accts):
+            nm = (a.get("nickname") or "").strip()
+            if not key or not nm:
+                continue
+            if key in nm or nm in nick:
+                tap(ACC_ROW_X, 206 + i * 126)
+                time.sleep(wait)
+                return True
+        return False
+    tap(*hit)
+    time.sleep(wait)
+    return True
+
+
+def _quota_from_items(items, mid=None):
+    """[(文本,x,y)] → (灵魂剩余, 语音剩余)。读不到该项为 None（None ≠ 0）。
+
+    分左右：星球页上「灵魂匹配」卡片在左半屏、「语音匹配」在右半屏，
+    各自卡片下挂一行「今日剩余 N 次」→ 按 x 是否过中线归位。
+    """
+    hits = []
+    for t, x, y in (items or []):
+        m = re.search(QUOTA_RE, t or "")
+        if m:
+            hits.append((x, int(m.group(1))))
+    if not hits:
+        return (None, None)
+    if mid is None:
+        try:
+            mid = _rd_mod().dev_size()[0] / 2.0
+        except Exception:
+            mid = 450.0
+    soul_q = min((h for h in hits if h[0] < mid), key=lambda z: -z[1], default=None)
+    voice_q = max((h for h in hits if h[0] >= mid), key=lambda z: -z[1], default=None)
+    if soul_q is None and len(hits) == 1:      # 只读到一条 → 按 x 归位
+        soul_q = hits[0] if hits[0][0] < mid else None
+        voice_q = None if soul_q else hits[0]
+    return (soul_q[1] if soul_q else None, voice_q[1] if voice_q else None)
+
+
+def planet_match_quota():
+    """星球页读「今日剩余 N 次」→ (灵魂剩余, 语音剩余)。读不到的那项为 None。
+
+    两项都读不到 → (None, None)（调用方须按"未知"处理，**不可**当成 0）。
+    """
+    try:
+        import soul_match as M
+        M.to_planet()
+    except Exception:
+        pass
+    time.sleep(1.2)
+    try:
+        items = _rd_mod().items()
+    except Exception:
+        return (None, None)
+    return _quota_from_items(items)
+
+
+def soul_quota_left(items=None):
+    """读星球页「灵魂/语音剩余次数」→ (灵魂剩余, 语音剩余, 用完弹层在不在)。
+
+    sq / vq：int 或 **None** —— None = 读不到 = 未知，**绝不可**当成 0
+    sheet  ：True = 屏幕上浮着「今日免费匹配机会已用完」弹层
+
+    ⭐ 2026-10-06（用户口径：「匹配的时候 OCR 分析一下剩余次数」）
+      实测证据（两条，一次有额度一次没额度）：
+        · 2026-10-02 19:15 日志，星球页 OCR：
+          `灵魂匹配 | 语音匹配 | 今日剩余46次 | 今日剩余3次 | …`
+          → 灵魂还有额度时，左半屏**确实显示**「今日剩余 46 次」
+        · 2026-10-06 05:27 截图，额度已用完：
+          只剩右半屏「今日剩余3次」（语音），**灵魂那行消失了**，
+          同时浮着「今日免费匹配机会已用完(50/50)」弹层
+      → 结论：**灵魂额度用完时那行「今日剩余 N 次」会消失**。
+        所以「用完」有两个**读出来**的判据（不再是靠 no_match 连击猜的）：
+          ① 读到 灵魂剩余 == 0
+          ② 灵魂那行读不到 **且** 用完弹层在屏幕上
+
+    参数 items：可传入**已经 OCR 过**的结果（如 to_planet 刚读到的），省一次识别。
+    """
+    if items is None:
+        try:
+            items = _rd_mod().items()
+        except Exception:
+            return (None, None, False)
+    try:
+        mid = _rd_mod().dev_size()[0] / 2.0
+    except Exception:
+        mid = 450.0
+    sq, vq = _quota_from_items(items, mid=mid)
+    try:
+        txt = "".join((t or "") for t, _x, _y in (items or []))
+        sheet = any(k in txt for k in QUOTA_KEYS)
+    except Exception:
+        sheet = False
+    return (sq, vq, sheet)
 
 
 if __name__ == "__main__":

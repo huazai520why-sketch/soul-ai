@@ -147,19 +147,24 @@ def _input(box_xy, text):
     return False
 
 
-def my_last_text():
-    """读本地 IM 库中「我」最后发出的一条消息文本（用于发送校验）"""
+def my_last_text(k=8):
+    """读本地 IM 库「最近 k 条有文本的消息」拼成的文本（用于发送校验）。
+
+    ⭐ 2026-10-06 去 ME 化：原实现 `WHERE senderId=ME` —— 切号后 im.ME 若没跟上
+    设备账号，就查不到刚发的消息 → 误判「发送未成功」（消息其实已发出）。
+    消息落库是既成事实，跟「我是谁」无关，直接按文本指纹查最近 k 条，绕开串号。
+    """
     try:
         import soul_im as I
         c = sqlite3.connect(I.IMDB)
-        row = c.execute(
-            "SELECT text FROM chatmsg WHERE senderId=? AND text IS NOT NULL "
-            "ORDER BY localTime DESC LIMIT 1", (str(I.ME),)).fetchone()
+        rows = c.execute(
+            "SELECT text FROM chatmsg WHERE text IS NOT NULL AND text!='' "
+            "ORDER BY localTime DESC LIMIT ?", (k,)).fetchall()
         c.close()
-        return row[0] if row else None
+        return "".join((r[0] or "") for r in rows)
     except Exception as e:
         print(f"[warn] 校验读库异常: {e!r}")
-        return None
+        return ""
 
 
 def verify_sent(text, timeout=16):
@@ -177,7 +182,8 @@ def verify_sent(text, timeout=16):
             print(f"✅ 数据库已确认发出（第 {i+1} 次校验）")
             return True
         time.sleep(2)
-    print(f"!! 数据库未检出本条消息 —— 最后一条我方消息: {my_last_text()!r} → 视为发送失败")
+    recent = my_last_text()
+    print("!! 数据库未检出本条消息 —— 最近消息: %r → 视为发送失败" % (recent[:100],))
     return False
 
 
@@ -191,7 +197,11 @@ def send_msg(text, box_xy=None, verify=True, maxlen=None):
             return False
         box_xy = box_xy or soul.BOX_XY
         print("输入框", box_xy)
-        _input(box_xy, text)
+        if not _input(box_xy, text):
+            # ⭐ 2026-10-06（P2 fail-closed）：灌字失败绝不点发送
+            #   ——否则空点会误触界面元素（真实事故：误发通话邀请卡）。
+            print("!! 灌字未生效 → 不点发送，本次判失败")
+            return False
         sx, sy = soul.SEND_XY
         print("发送", (sx, sy))
         soul.tap(sx, sy)

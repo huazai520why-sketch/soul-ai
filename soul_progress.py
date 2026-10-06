@@ -15,44 +15,39 @@ from collections import OrderedDict
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
+# ⚠️ 2026-10-06 修：原来这里 `sys.stdout = io.TextIOWrapper(sys.stdout.buffer, ...)`，
+#   ① 会**关掉原 stdout**（包装器被回收时连带关闭底层 buffer）→ 被别人 import 后
+#      调用方后续 print 全挂（`soul_direction.py` 里已记录过同款事故）；
+#   ② 若调用方的 sys.stdout 没有 .buffer（如测试里的 StringIO）→ 导入即 AttributeError。
+#   改用 reconfigure：只改编码，不换对象。
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 import soul_im as I
 
 
 def _base():
     """轮数基线（2026-09-29 用户定：之前的对话轮次不算）。
-    读 E:/soul/.soul_turn_base.json，返回起始时间戳(ms)；0=算全历史。"""
-    import json
-    try:
-        from soul_instance import state_path as _sp   # 2026-09-30 双实例
-        _f = _sp(BASE, ".soul_turn_base.json")
-    except Exception:
-        _f = os.path.join(BASE, ".soul_turn_base.json")
-    try:
-        with open(_f, encoding="utf-8") as f:
-            return int(json.load(f).get("base_ts") or 0)
-    except Exception:
-        return 0
+    ⭐ 2026-10-06：改走 `soul_stage`（唯一来源），本文件不再自己实现。"""
+    import soul_stage as _sg
+    return _sg.base_ts()
 
 
 def _base_str(ts):
-    from datetime import datetime
-    return datetime.fromtimestamp(ts / 1000).strftime("%Y-%m-%d %H:%M") if ts else "（未设，算全历史）"
+    import soul_stage as _sg
+    return _sg.base_str(ts)
 
-STAGES = [
-    (0,   30,  "初识",   "建立基本信任、找共同点、被记住"),
-    (30,  50,  "熟悉",   "信息交换 + 情绪共鸣，进入熟人区"),
-    (50,  100, "推进",   "情绪投资 + 独特性（你是特别的）"),
-    (100, 9999,"暧昧",   "性张力 + 见面渴望；**必须已暧昧**"),
-]
+# ⭐ 2026-10-06：阶段表**唯一来源**移到 `soul_stage.STAGES`。
+#   原来这里和 `soul_review.TURNS_STAGES` 是两份拷贝，
+#   `soul_review.py:226-228` 自己都写了「不一致会错档」的警告。
+STAGES = __import__("soul_stage").STAGES
 
 
 def stage_of(turns):
-    for lo, hi, name, goal in STAGES:
-        if lo <= turns < hi:
-            return name, goal
-    return "未知", ""
+    import soul_stage as _sg
+    return _sg.stage_of(turns)
 
 
 # ==================== 意向评分（判断该重点投入谁）====================
@@ -118,33 +113,11 @@ def turn_near_100(turns):
 
 
 def turns_of(sid, c, since=0):
-    """按 senderId 变化分段，统计交替段数（≈轮数）
-    since: 只统计 localTime >= since 的消息（轮数基线，2026-09-29 起用）"""
-    sql = ("SELECT senderId, text, msgContent, localTime FROM chatmsg "
-           "WHERE sessionId=?")
-    args = [sid]
-    if since:
-        sql += " AND localTime>=?"
-        args.append(since)
-    sql += " ORDER BY localTime ASC"
-    rows = c.execute(sql, args).fetchall()
-    segs, last = 0, None
-    mine = theirs = 0
-    last_t = None
-    for sender, text, content, lt in rows:
-        if I._is_sys(text, content):
-            continue
-        who = "me" if str(sender) == str(I.ME) else "her"
-        if who != last:
-            segs += 1
-            last = who
-        if who == "me":
-            mine += 1
-        else:
-            theirs += 1
-        last_t = lt
-    return {"turns": segs, "mine": mine, "theirs": theirs,
-            "total": mine + theirs, "last": last_t, "last_who": last}
+    """按 senderId 变化分段，统计交替段数（≈轮数）。
+    ⭐ 2026-10-06：实现**唯一来源**移到 `soul_stage.turns_of`（本文件只转发），
+       保证报告与「注入提示词的阶段」用的是同一套口径。"""
+    import soul_stage as _sg
+    return _sg.turns_of(sid, c, since)
 
 
 def main():

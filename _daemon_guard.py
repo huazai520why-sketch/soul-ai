@@ -1,31 +1,30 @@
 # -*- coding: utf-8 -*-
 """Soul 守护看护 —— daemon 挂了就自动拉起（保证 24h 不断）
-跑法（副机 Session 1，pythonw 无窗）：pythonw E:\\soul\\_daemon_guard.py --vm N
 
+跑法（Session 1，pythonw 无窗）：pythonw E:\\soul\\_daemon_guard.py
+
+⛔ 2026-10-05：**多实例 / 昼夜换号 / 分身 全部废弃**。
+   用户口径：只用一个 Soul App，多账号靠**在 App 内手动切号**
+   （账号跟随见 soul_daemon._account_gate_ok）。故本 guard 为**单实例常驻**：
+   · VM 恒为 "0"，不再支持 `--vm N` / SOUL_VMINDEX / SOUL_SLOT_* 环境变量
+   · 删除昼夜时段调度（SLOT_* / in_slot）、实例停用开关（DISABLED_VMS）、
+     "时段外关机"（vm_shutdown）—— 模拟器与 daemon 全天候常驻
+   · 只做一件事：确保 MuMuNxMain 在 → 实例在 → daemon 在
+
+历史（保留作参考）：
 2026-10-03 单例修复：guard 原来没有互斥，被重复拉起时会越积越多，
 每个 guard 又各自拉起一个 daemon → 多 guard + 多 daemon 互相覆盖 state
-（实测 last_match 被写回 0、匹配永远空转）。
-用 msvcrt 文件锁：**原子**获取、进程退出自动释放，免疫并发启动竞态。
+（实测 last_match 被写回 0、匹配永远空转）→ 命名内核互斥(CreateMutexW)+文件锁双重保险。
 
-2026-10-04 昼夜时段调度（用户方案：“白天跑一个号 晚上跑一个号”）：
-  硬件带不动双实例并发 → 时分复用。本 guard 只管**自己这个实例**：
-  · 时段内：MuMuNxMain(session1) 在 → 本实例已启动 → daemon 在跑
-  · 时段外：停本实例 daemon + shutdown 本实例模拟器，把资源让给对方
-  两个 guard 各守一段（VM0 守白天、VM1 守晚上），互补即全天在线。
-  ⚠ 模拟器必须在 **session 1** 启动（SSH/session 0 里 MuMuNxMain 15 秒自杀）。
-    本脚本由计划任务以“交互方式”拉起 → 本身就在 session 1，Popen 即可。
-  时段可用环境变量覆盖：SOUL_SLOT_DAY_START/DAY_END/DAY_VM/NIGHT_VM
+⚠ 模拟器必须在 **session 1** 启动（SSH/session 0 里 MuMuNxMain 15 秒自杀）。
+  本脚本由计划任务以“交互方式”拉起 → 本身就在 session 1，Popen 即可。
 """
 import os, sys, io, time, subprocess
 
-# ⭐ 2026-10-04 双开：支持 `--vm N` 显式指定实例号（比用 .cmd 包环境变量干净）。
-#   不带 --vm 时行为与原来**完全一致**（读环境变量、兜底 "0"）→ 账号1 守护不受影响。
-VM = os.environ.get("SOUL_VMINDEX", "0")
-if "--vm" in sys.argv:
-    try:
-        VM = str(sys.argv[sys.argv.index("--vm") + 1]) or VM
-    except Exception:
-        pass
+# ⛔ 2026-10-05：**多实例已废弃** —— 用户放弃「多实例 / Soul 应用内分身」，
+#   改为单实例 + 在 Soul App 内手动切号（账号跟随见 soul_daemon._account_gate_ok）。
+#   故 VM 恒为 "0"，不再支持 `--vm N` / SOUL_VMINDEX。
+VM = "0"
 BASE = r"E:\soul"
 OUTD = os.path.join(BASE, "_uimap", "daemon")
 try:
@@ -44,11 +43,7 @@ NO_WINDOW = 0x08000000
 CLI = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
 NXMAIN = r"D:\MuMuPlayer\nx_main\MuMuNxMain.exe"
 
-# ── 昼夜时段（用户 2026-10-04 方案；可用环境变量覆盖，改完重启 guard 生效）──
-SLOT_DAY_START = int(os.environ.get("SOUL_SLOT_DAY_START", "8"))      # 白天起（含）
-SLOT_DAY_END = int(os.environ.get("SOUL_SLOT_DAY_END", "20"))         # 白天止（不含）
-SLOT_DAY_VM = str(os.environ.get("SOUL_SLOT_DAY_VM", "0"))            # 白天跑哪个实例
-SLOT_NIGHT_VM = str(os.environ.get("SOUL_SLOT_NIGHT_VM", "1"))        # 晚上跑哪个实例
+# ⛔ 2026-10-05：昼夜换号（SLOT_*）已删除 —— 单实例常驻，模拟器不再按时段开关机。
 
 _LOCKFH = None
 _MUTEXH = None
@@ -114,10 +109,8 @@ def alive(pid):
 
 
 def launch():
-    env = dict(os.environ)
-    env["SOUL_VMINDEX"] = VM
     try:
-        subprocess.Popen([PYW, DAEMON], env=env,
+        subprocess.Popen([PYW, DAEMON], env=dict(os.environ),
                          creationflags=DETACHED | NO_WINDOW,
                          close_fds=True)
         return True
@@ -182,31 +175,6 @@ def vm_launch(vm):
     return False
 
 
-def vm_shutdown(vm):
-    log("关停实例 vm=%s（control shutdown，让资源给另一个号）" % vm)
-    _run([CLI, "control", "-v", vm, "shutdown"], 60)
-
-
-# ── 时段 ──────────────────────────────────────────────────────────────────
-def in_slot(hour, vm):
-    """本实例当前是否轮到它跑。白天窗口 [START, END)，其余算晚上。"""
-    day = SLOT_DAY_START <= hour < SLOT_DAY_END
-    return (day and vm == SLOT_DAY_VM) or ((not day) and vm == SLOT_NIGHT_VM)
-
-
-def _drop_round_lock():
-    """时段收工时清掉本实例的轮次锁：否则残留锁会让下一时段开局空转一轮
-    （锁 TTL 55min，上一天残留的锁甚至能卡到次日）。"""
-    name = ".soul_auto.lock" if VM == "0" else ".soul_auto.%s.lock" % VM
-    p = os.path.join(BASE, name)
-    try:
-        if os.path.exists(p):
-            os.remove(p)
-            log("已清轮次锁 %s" % name)
-    except OSError:
-        pass
-
-
 def _acquire():
     """单例双重保险：先内核命名互斥锁（强互斥、无文件锁竞态），再文件锁。
     ⭐ 2026-10-05 修复：msvcrt 文件锁在本机实测不可靠（同文件可被多进程同时"a+"打开，
@@ -214,12 +182,20 @@ def _acquire():
     global _MUTEXH
     try:
         import ctypes
-        _MUTEXH = ctypes.windll.kernel32.CreateMutexW(None, False,
-                                                      "SoulGuard_%s" % VM)
+        # ⭐ 2026-10-05 晚 修复「双 guard → 双 daemon」：
+        #   旧写法 `ctypes.windll.kernel32.CreateMutexW(...)` 之后再调
+        #   `ctypes.windll.kernel32.GetLastError()` —— ctypes 默认不保存 last-error，
+        #   两次调用之间 Python 自身的 Win32 调用会把错误码冲掉，于是
+        #   ERROR_ALREADY_EXISTS(183) 经常读不到 → 第二、第三个 guard 都以为自己是唯一
+        #   → 各拉起一个 daemon → 两个进程同时写同一份 wshot.png（读者拿到空帧
+        #   OSError('image file is truncated')）+ 同时驱动同一台设备互相打架。
+        #   正确姿势：use_last_error=True + ctypes.get_last_error()。
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        _MUTEXH = k32.CreateMutexW(None, False, "SoulGuard_%s" % VM)
         if not _MUTEXH:
             return False
-        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            ctypes.windll.kernel32.CloseHandle(_MUTEXH)
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            k32.CloseHandle(_MUTEXH)
             _MUTEXH = None
             log("已有 guard（内核互斥）在跑 → 本进程退出")
             return False
@@ -244,49 +220,29 @@ def _acquire():
 
 
 def main():
+    """单实例常驻守护：确保 MuMuNxMain 在 → 实例在 → daemon 在。
+
+    ⛔ 2026-10-05：删除昼夜换号 / 实例停用（DISABLED_VMS）/ 时段外关机 ——
+    模拟器与 daemon 全天候常驻，不再有任何多实例调度。
+    """
     if not _acquire():
         log("已有 guard 在跑 → 本进程退出")
-        os._exit(0)      # ⭐ 2026-10-04 同上：return 会残留空壳，必须硬退出
-    log("=== GUARD START vm=%s pid=%d ｜ 白天 %02d:00~%02d:00=VM%s ｜ 其余=VM%s ==="
-        % (VM, os.getpid(), SLOT_DAY_START, SLOT_DAY_END, SLOT_DAY_VM, SLOT_NIGHT_VM))
-    last_on = None
+        os._exit(0)      # ⭐ 2026-10-04：return 会残留空壳，必须硬退出
+    log("=== GUARD START pid=%d（单实例常驻模式）===" % os.getpid())
     while True:
         try:
-            on = in_slot(time.localtime().tm_hour, VM)
-            if on != last_on:
-                log("⏰ 时段%s（%s）本实例 vm=%s" % ("开始" if on else "结束",
-                                                  time.strftime("%H:%M"), VM))
-                if not on:
-                    _drop_round_lock()
-                last_on = on
-
-            if on:
-                if not ensure_nxmain():
-                    time.sleep(30)
-                    continue
-                if not vm_started(VM):
-                    if not vm_launch(VM):
-                        time.sleep(60)
-                        continue
-                pid = read_pid()
-                if not alive(pid):
-                    log("daemon 不在（pid=%s）→ 拉起" % pid)
-                    launch()
-                    time.sleep(20)
-            else:
-                pid = read_pid()
-                if alive(pid):
-                    log("时段外 → 停 daemon pid=%s" % pid)
-                    kill(pid)
-                    time.sleep(3)
-                    try:
-                        os.remove(PIDF)
-                    except OSError:
-                        pass
-                if vm_started(VM):
-                    vm_shutdown(VM)
-                time.sleep(120)
+            if not ensure_nxmain():
+                time.sleep(30)
                 continue
+            if not vm_started(VM):
+                if not vm_launch(VM):
+                    time.sleep(60)
+                    continue
+            pid = read_pid()
+            if not alive(pid):
+                log("daemon 不在（pid=%s）→ 拉起" % pid)
+                launch()
+                time.sleep(20)
         except Exception as e:
             log("guard 异常: %r" % (e,))
         time.sleep(60)

@@ -1,5 +1,13 @@
 # -*- coding: utf-8 -*-
-"""多实例隔离 —— 让同一套脚本可以同时操作多个 MuMu 实例且互不串台。
+"""多实例隔离 —— ⛔ 2026-10-05 起**多实例已废弃**，本模块恒为单实例。
+
+用户口径：放弃「多实例 / Soul 应用内分身」，改为**单实例 + 在 Soul App 内手动切号**
+（账号跟随见 soul_daemon._account_gate_ok）。因此 vm_index() 恒返回 0，
+state_path() 一律返回原文件名，行为与改造前完全一致，不再产生任何 `.<N>` 后缀文件。
+本文件保留仅为兼容既有 import（大量脚本依赖 state_path / vm_index）。
+
+—— 以下为原多实例说明（历史存档）——
+多实例隔离：让同一套脚本可以同时操作多个 MuMu 实例且互不串台。
 
 背景（2026-09-30 用户需求）：
   应用分身（com.netease.mumu.cloner）**做不到隔离** —— 实测 `screencap -d 5`
@@ -39,17 +47,12 @@ ENV_KEY = "SOUL_VMINDEX"
 
 
 def vm_index():
-    """当前实例号。非法值回退 0（宁可按老路径跑，也不要造出一个乱七八糟的新路径）。"""
-    raw = os.environ.get(ENV_KEY, "").strip()
-    if not raw:
-        return DEFAULT_INDEX
-    if not re.fullmatch(r"\d+", raw):
-        return DEFAULT_INDEX
-    try:
-        v = int(raw)
-    except ValueError:
-        return DEFAULT_INDEX
-    return v if v > 0 else DEFAULT_INDEX
+    """当前实例号 —— **恒为 0**（多实例已废弃，见文件头说明）。
+
+    不再读 SOUL_VMINDEX：用户改用「单实例 + App 内切号」，任何实例后缀都只会
+    造成状态文件分叉（截图/锁/hwnd 各写各的），是 bug 源头。保留函数只为兼容 import。
+    """
+    return DEFAULT_INDEX
 
 
 def state_path(base_dir, name, idx=None):

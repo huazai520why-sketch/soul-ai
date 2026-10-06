@@ -67,7 +67,13 @@ def dev_size(refresh=False):
             return _DEV_SIZE
     except Exception:
         pass
-    return (DEV_W, DEV_H)
+    # ⭐ 2026-10-06 修（P1#7 坐标空间双兜底）：读不到真实尺寸时**不再自己返回常量猜**，
+    #   交给 `soul.calibrate()`（设备空间的**单一权威**）统一处理；它内部有常量回退。
+    try:
+        import soul as _s2
+        return _s2.calibrate()
+    except Exception:
+        return (DEV_W, DEV_H)
 
 
 def _shot_size():
@@ -100,14 +106,25 @@ _OCR_CACHE = {"key": None, "res": None}
 _OCR_WINDOW = float(os.environ.get("SOUL_OCR_WINDOW", "0.30"))
 _OCR_LAST = {"ts": 0.0, "items": None}
 
+# ⭐ 2026-10-06 省电：onnxruntime 默认按 CPU 核心数开线程池（本机 16 核）
+#   → 每次 OCR 推理瞬间吃满 6+ 核，整机长期 70%+ 负载、CPU 锁死在满频 2.6GHz。
+#   PP-OCRv5-mobile 模型很小，4 线程与 16 线程单次耗时几乎无差（稳态仍 ~1.2s），
+#   但峰值功耗可降一半以上。轮询间隔 150s，这点延迟完全无感。
+#   调整：SOUL_OCR_THREADS=8 放开 ｜ =0 恢复引擎默认（吃满所有核）
+_OCR_THREADS = int(os.environ.get("SOUL_OCR_THREADS", "4") or 0)
+
 
 def _build_v5():
     """PP-OCRv5 mobile（检测 + 识别）。"""
     from rapidocr import RapidOCR as _R, OCRVersion, ModelType
-    return _R(params={"Det.ocr_version": OCRVersion.PPOCRV5,
-                      "Det.model_type": ModelType.MOBILE,
-                      "Rec.ocr_version": OCRVersion.PPOCRV5,
-                      "Rec.model_type": ModelType.MOBILE})
+    params = {"Det.ocr_version": OCRVersion.PPOCRV5,
+              "Det.model_type": ModelType.MOBILE,
+              "Rec.ocr_version": OCRVersion.PPOCRV5,
+              "Rec.model_type": ModelType.MOBILE}
+    if _OCR_THREADS > 0:
+        params["EngineConfig.onnxruntime.intra_op_num_threads"] = _OCR_THREADS
+        params["EngineConfig.onnxruntime.inter_op_num_threads"] = 1
+    return _R(params=params)
 
 
 def _norm_ocr(out):

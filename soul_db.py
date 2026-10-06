@@ -21,11 +21,24 @@
 import json, os, sys, io
 from datetime import datetime
 
-try:  # 2026-09-30 双实例：关系档案必须按账号分开（否则账号2 会带着主号的关系档案去聊）
-    from soul_instance import state_path as _sp
-    NOTES = _sp(r"E:\soul", "soul_notes.json")
-except Exception:
-    NOTES = r"E:\soul\soul_notes.json"
+# ⚠️ 2026-10-05 改（用户口径：单实例 + App 内切号）：
+#   关系档案必须**按当前登录账号**解析路径 —— 否则切号后新号会带着旧号的好友档案去聊（串号）。
+#   名字里**不得**出现具体账号：soul_acct.path() 运行期解析（主号沿用原名 `soul_notes.json`，
+#   非主号自动变 `soul_notes.<uid>.json`），切号立即生效。
+_NOTES_FALLBACK = r"E:\soul\soul_notes.json"
+
+
+def _notes_path():
+    try:
+        import soul_acct
+        return soul_acct.path(r"E:\soul", "soul_notes.json")
+    except Exception:
+        return _NOTES_FALLBACK
+
+
+# 兼容：老代码/外部脚本可能读 NOTES 常量。它只是**读取那一刻**的快照，仅供显示用；
+# 真正的读写一律走 _notes_path()（见 _load/_save）。
+NOTES = _notes_path()
 VALID = ("source", "match_pct", "planet", "zodiac", "mbti", "tags", "common",
          "distance_km", "status", "sent_count", "notes", "updated_at",
          "stage", "stage_at")   # stage = 亲密度阶梯 L0~L4（2026-09-26 三天目标用）
@@ -64,20 +77,22 @@ def _now():
 
 
 def _load():
-    if not os.path.exists(NOTES):
+    p = _notes_path()          # ⭐ 每次读都重新解析（切号后立即换到新号档案）
+    if not os.path.exists(p):
         return {}
     try:
-        with open(NOTES, "r", encoding="utf-8") as f:
+        with open(p, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
         return {}
 
 
 def _save(d):
-    tmp = NOTES + ".tmp"
+    p = _notes_path()          # ⭐ 同上：写也必须落在当前账号的档案上
+    tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(d, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, NOTES)
+    os.replace(tmp, p)
 
 
 def upsert(nickname, **kw):

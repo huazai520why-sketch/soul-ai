@@ -112,14 +112,16 @@ RISKY = ["色", "身材", "性感", "胸", "腿好看", "包养", "约炮", "睡
          "我好想", "欲罢不能"]
 
 MAXLEN = 25          # 单条字数上限（用户明确要求 ≤20 字，留 5 字余量）
-TURNS_STAGES = [(0, 30, "初识"), (30, 50, "熟悉"), (50, 100, "推进"), (100, 10**9, "暧昧")]
+# ⭐ 2026-10-06：阶段表**唯一来源** = `soul_stage.STAGES`。
+#   原来这里是 `TURNS_STAGES`，与 `soul_progress.STAGES` 是两份逐项相同的拷贝
+#   （本文件旧注释自己就写了「与 soul_progress.turns_of 保持一致，否则阶段判断会错档」）。
+#   现在两处都从 soul_stage 取，物理上不可能再分叉。
+import soul_stage as _sg_for_stage            # noqa: E402
+TURNS_STAGES = [(lo, hi, nm) for lo, hi, nm, _gl in _sg_for_stage.STAGES]
 
 
 def stage_of(turns):
-    for lo, hi, name in TURNS_STAGES:
-        if lo <= turns < hi:
-            return name
-    return "?"
+    return _sg_for_stage.stage_name(turns)
 
 
 def _day_range(datestr):

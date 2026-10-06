@@ -8,10 +8,15 @@ Soul 24 小时守护进程 —— 本地模型干活，云端可复盘
      顺便把之前的聊天对象重新唤醒。」
   · 全天不分昼夜（节假日也不分）—— 时段两档（白天只回/晚上全流程）已作废。
 
-三态调度（优先级从高到低）：
-  ① 有真人待回 → 优先回复（jianghua 生成 + 确定性闸 + soul_reply 发送）
-  ② 空闲      → 星球匹配认识新人（复用 soul_match，抢占式：中途来消息立刻中断）
-  ③ 间歇      → 唤醒老联系人（im.follow 选「聊过≥10句且冷≥12h」的人 + jianghua 开场）
+优先级（从高到低，用户 2026-10-06 定稿）：
+  ① 奇遇铃        全局最高：弹铃**立刻中断**当前动作（回消息/匹配/唤醒），处理完再回原流程
+  ② 待回消息      分两类，**未读优先**，同组内新 → 旧：
+                    · 未读待回（她刚发、我还没看）
+                    · **已读待回**（我看过但还没回）
+                  另有「聊天导航红点」= 有新消息 → 本轮**不匹配**，先回来回消息（清红点=回消息）
+  ③ 空闲      → 星球匹配认识新人（复用 soul_match，抢占式：中途来消息立刻中断）
+  ④ 间歇      → 唤醒老联系人（im.follow 选「聊过≥10句且冷≥12h」的人 + jianghua 开场）
+  ⑤ 都没有    → 空闲等待（每 10s 探头，来新消息 10s 内醒来）
 
 安全与稳定（都是这台机器上真金白银换来的）：
   · 单实例互斥：复用 soul_global_lock（整轮锁），与 Agent 手动操作互不撞车
@@ -25,7 +30,7 @@ Soul 24 小时守护进程 —— 本地模型干活，云端可复盘
   pythonw E:/soul/soul_daemon.py                      # 实例0（主号）
   set SOUL_VMINDEX=1 ^& pythonw E:/soul/soul_daemon.py   # 实例1
 """
-import os, sys, io, json, time, sqlite3, subprocess, urllib.request, traceback
+import os, sys, io, json, time, sqlite3, subprocess, urllib.request, traceback, re
 from datetime import datetime
 
 # ── ⚡ 提速开关（必须在 import soul_reply 之前设，否则不生效）─────────────
@@ -71,8 +76,26 @@ except Exception:
     def _sp(base, name):
         return os.path.join(base, name)
 
-MEMDB  = _sp(BASE, "soul_memory.db")          # 累积库（只增不减）
-STATE  = os.path.join(OUTD, "state.%s.json" % VM)
+# ⭐ 2026-10-05：累积库/运行状态**必须按当前登录账号解析**（切号后立即换文件）。
+#   主号沿用原名（soul_memory.db / state.0.json）—— 现有数据零迁移；
+#   非主号自动变 soul_memory.<uid>.db / state.0.<uid>.json。
+#   ⚠️ 不能用模块级常量：切号发生在运行期，路径必须**每次调用时**解析。
+import soul_acct as _acct          # noqa: E402
+
+
+def _memdb():
+    """当前账号的累积库路径（只增不减）。"""
+    return _acct.path(BASE, "soul_memory.db")
+
+
+def _state_path():
+    """当前账号的 daemon 运行状态文件路径。"""
+    return _acct.state_path(OUTD, VM)
+
+
+# 兼容：旧代码/诊断脚本若引用 MEMDB/STATE 常量，取的是**导入那一刻**主号的值。
+MEMDB  = _memdb()
+STATE  = _state_path()
 LOGF   = os.path.join(OUTD, "daemon.%s.log" % VM)
 PIDF   = os.path.join(OUTD, "daemon.%s.pid" % VM)
 LOCKD  = os.path.join(OUTD, "daemon.%s.lock" % VM)   # ⭐ 独立锁文件（永不删除）
@@ -82,6 +105,13 @@ HOST  = "http://192.168.10.210:11434"          # 本机 Ollama
 MODEL = "jianghua"                             # 人设模型
 N_MSG = 2                                      # 每条待回最多发几条
 USE_FAST = os.environ.get("SOUL_FAST_REPLY", "1") == "1"   # 快速回复路径（soul_fast）
+
+# ⭐ 2026-10-06 用户口径（定稿）：
+#   · **匹配来的新用户**（她说过 ≤ 这个轮数）→ 用**本地模型**生成回复（上下文少，够用且快）
+#   · **超过这个轮数的老对话** → **一律走智囊团**；智囊团拿不到候选就**不发**，绝不降级本地
+#     （老对话用弱提示词的本地模型 = 死磕旧话题 / 干巴巴，实测就是这么聊崩的）
+# 计数口径：hist 里 role=="her" 的条数（她说过几句）。
+NEW_ROUNDS = int(os.environ.get("SOUL_NEW_ROUNDS", "3"))
 
 # ── ⚡ 提速（2026-10-03，用户要求"操作快一点"）────────────────────
 # 实测耗时：模型生成 ~0.4s、OCR 稳态 ~1.2s、截图 ~0.7s、pull ~2.3s。
@@ -99,7 +129,42 @@ POLL_IDLE   = 150        # 无消息 → 巡检间隔（秒）
 POLL_HOT    = 25         # 刚有真人消息 → 快速再看（趁她还在线）
 MATCH_EVERY = 60        # 「匹配新人」最小间隔（2026-10-03 用户首要目标：回复完立即匹配，额度内连续匹配）
 WAKE_EVERY  = 30 * 60    # 「唤醒老人」最小间隔
+# ⭐ 2026-10-06（用户：「怎么还没拉起 唤醒好友 速度太慢了」）：
+#   当天匹配额度读完为 0 → 匹配整天不跑，唤醒成了**唯一**的活，还守 30 分钟就太空转。
+#   此时收紧到 WAKE_EVERY_IDLE。调：`SOUL_WAKE_EVERY_IDLE`（分钟）
+WAKE_EVERY_IDLE = int(os.environ.get("SOUL_WAKE_EVERY_IDLE", "10")) * 60
 MATCH_N     = 3          # 每次匹配几个
+# ⭐ 2026-10-06 用户现场报「匹配次数用完了 没有走下一步唤醒」→ 挖出的真 bug：
+#   `match_nav_fail_streak`（导航失败连续计数）**只被写入、从未被判断** = 死变量。
+#   后果：连续十几二十次 `no_planet`（压根没进到星球页）→ 因为 10-06「防误判额度耗尽」
+#   的修正把它排除在 `match_empty_streak` 之外 → 判不出「耗尽」→ 不转唤醒 → **空转到天亮**。
+#   实测 2026-10-06 04:38 抓到 `match_nav_fail_streak = 15`、`match_empty_streak = 0`。
+#   现在：连续 ≥MATCH_NAV_FAIL_MAX 次导航失败 → 判定**匹配通道故障** → 立刻转唤醒 + 明确告警
+#   （根因可能是额度用完、UI 改版、App 卡死，任何一种都不该让机器干等）。
+MATCH_NAV_FAIL_MAX = int(os.environ.get("SOUL_MATCH_NAV_FAIL_MAX", "3"))
+# ⭐ 2026-10-06 补（用户现场质疑「怎么还是在一直走匹配啊」）：
+#   上面两个兜底都只做到了「**这一次**跳过匹配 / 立刻转唤醒」，**没有**让后续轮次别再来。
+#   匹配间隔才 60s → 判完用完，1 分钟后照样再进一次「星球匹配」，而且一半轮次压根
+#   进不去星球页（`no_planet`），每次白烧 ~100s 导航（实测 06:27~06:29 一轮 98966 ms）。
+#   所以再加一层：**确认没戏 → 整段匹配静默** MATCH_SILENT_COOL，期间连 to_planet 都不做，
+#   只走「唤醒老人 + 巡检」。到期再试一次（App 会刷新次数 / 弹层「去聊天」能攒回次数）。
+#   静默源分两类，**时长不同**（2026-10-06 用户口径：「静默也不会更新次数，除非次日」）：
+#     ① 额度读完为 0 → **静默到次日**。App 是**每日**配额（弹层原文
+#        「今日免费匹配机会已用完(50/50)」），当天再试多少次都不会有新次数 → 试就是白烧。
+#        跨天（日期一变）自动放行，不用人工干预。
+#     ② 匹配通道故障（no_planet）→ 静默 MATCH_SILENT_COOL(30min)。那是 UI/App 卡死，
+#        过一阵可能自己好，不该为它放弃一整天。
+MATCH_SILENT_COOL = int(os.environ.get("SOUL_MATCH_SILENT_COOL", "30")) * 60
+# ⭐ 2026-10-06 匹配前的「聊天导航红点」闸（用户两轮定稿）：
+#   · 「匹配之前记得把聊天导航的红点消除完了之后再匹配」
+#   · 「清红点**不是叫你进入返回**，是**进入然后回消息**」
+#   → 连 DOT_BLOCK_MAX 轮都消不掉的红点 = 系统卡片（回不了）→ 放行匹配，防饿死。
+DOT_BLOCK_MAX = int(os.environ.get("SOUL_DOT_BLOCK_MAX", "3"))
+# ⭐ 2026-10-06 用户口径：「**先问智囊团，60s 拿不到才用预生成池**」（作用于**老对话**）。
+#   这是**墙钟硬预算**（不是单次调用超时）：智囊团自己那套（快 40s／深最多 ~80s）
+#   是"单次 http"的上限，叠加起来会超 60s，所以这里再用线程 join 兜一层。
+#   ⚠️ 新对话不走智囊团（直接本地层），所以这条预算实际只对 >NEW_ROUNDS 轮的老对话生效。
+BRAIN_BUDGET = float(os.environ.get("SOUL_BRAIN_BUDGET", "60"))
 WAKE_N      = 2          # 每次唤醒几个
 # ⭐ 2026-10-03 用户：「有的人最近聊天时间太久了 不要唤醒」
 #   → 唤醒窗口 = 冷 12h ~ 3 天；**超过 3 天（72h）不开口**（太久没联系，开口很突兀）。
@@ -189,7 +254,7 @@ def log(s):
 
 def load_state():
     try:
-        with io.open(STATE, encoding="utf-8") as f:
+        with io.open(_state_path(), encoding="utf-8") as f:
             return json.load(f) or {}
     except Exception:
         return {}
@@ -197,7 +262,7 @@ def load_state():
 
 def save_state(st):
     try:
-        with io.open(STATE, "w", encoding="utf-8") as f:
+        with io.open(_state_path(), "w", encoding="utf-8") as f:
             json.dump(st, f, ensure_ascii=False, indent=1)
     except Exception as e:
         log("  !! state 写入失败: %r" % (e,))
@@ -232,7 +297,7 @@ def _sendable(name):
     if not uid:
         return True
     try:
-        c = sqlite3.connect(MEMDB)
+        c = sqlite3.connect(_memdb())
         n = c.execute(
             "SELECT count(*) FROM chatmsg WHERE sessionId IN "
             "(SELECT sessionId FROM session WHERE toUserId=?)",
@@ -270,7 +335,8 @@ def _deliver(name, texts, my_recent=None, allow_chain=False):
     """统一发送通道：快速路径优先，MISS 才回退全路径。
     返回 "SENT"/"SKIP"(硬闸) /"FAIL"。do_reply 与 wake_old 共用。"""
     # ⭐ 2026-10-05 账号安全闸（放这里：do_reply 与 wake_old 两条发送路径都覆盖）
-    if not _account_gate_ok():
+    # ⭐ 2026-10-06 force=True：发送前强制刷新身份
+    if not _account_gate_ok(force=True):
         return "SKIP"
     if allow_chain:
         # ⭐ 2026-10-03 拆分条只走全路径（快速路径不认连发豁免）
@@ -316,7 +382,7 @@ def _follow_mem(min_msgs=10, cool_h=12, max_idle_h=None, skip=None):
     too_old = 0
     skip = set(skip or ())     # ⭐ 永久放弃主动唤醒的人（用户 2026-10-04）
     try:
-        c = sqlite3.connect(MEMDB)
+        c = sqlite3.connect(_memdb())
         nicks = {str(u): n for u, n in c.execute("SELECT uid, name FROM nick")}
         rows = c.execute("SELECT sessionId, toUserId, timestamp FROM session").fetchall()
         now_ms = time.time() * 1000
@@ -358,7 +424,9 @@ def _follow_mem(min_msgs=10, cool_h=12, max_idle_h=None, skip=None):
         c.close()
     except Exception as e:
         log("  !! _follow_mem 异常: %r" % (e,))
-        return []
+        # ⭐ 2026-10-06 修（P1#10）：异常时**不再返回 []**（那会被上层当成"唤醒池 0 人"→
+        #   进而判干旱→切号）。返回 None = 未知，调用方必须区分处理（fail-closed）。
+        return None
     if too_old:
         log("  唤醒候选：%d 人因「冷 > %.0f 天」被排除（太久没聊，不开口）"
             % (too_old, (max_idle_h or 0) / 24.0))
@@ -541,71 +609,24 @@ class _Tick(object):
 
 # ══════════════════════ 累积库：merge + 取历史 ══════════════════════
 def merge_memory():
-    """把正式库(im.IMDB)增量并入累积库 —— Soul 会清库，这里只增不减。"""
-    src = im.IMDB
-    if not os.path.exists(src):
-        return 0
-    ME = str(im.ME)
-    m = sqlite3.connect(MEMDB)
-    m.execute("""CREATE TABLE IF NOT EXISTS chatmsg(
-      sessionId TEXT, msgId TEXT, senderId TEXT, receiverId TEXT, localTime INTEGER,
-      msgType INTEGER, text TEXT, msgContent TEXT, PRIMARY KEY(sessionId, msgId))""")
-    m.execute("""CREATE TABLE IF NOT EXISTS session(
-      sessionId TEXT PRIMARY KEY, toUserId TEXT, chatType INTEGER, unReadCount INTEGER,
-      timestamp INTEGER, lastMsgText TEXT)""")
-    m.execute("CREATE TABLE IF NOT EXISTS nick(uid TEXT PRIMARY KEY, name TEXT)")
-    m.execute("CREATE INDEX IF NOT EXISTS idx_cm_sid ON chatmsg(sessionId, localTime)")
-    m.commit()
-    added = 0
+    """把正式库(im.IMDB)增量并入累积库 —— Soul 会清库，这里只增不减。
+
+    ⭐ 2026-10-06 用户拍板「把累积库和正式库合并一下不就行了」：
+      实现已**搬到 `soul_im.merge_memory()`**，并挂在 `soul_im.pull()` 成功之后自动执行
+      → 消除"每轮才同步一次"的滞后。此处保留同名薄包装，老调用点（本轮轮末）行为不变：
+      轮末再兜一次，确保即使某次 pull 之后才写入的消息也不会滞留到下一轮。
+    """
     try:
-        s = sqlite3.connect(src)
-        ccols = set(x[1] for x in s.execute("PRAGMA table_info(chatmsg)").fetchall())
-        use = [c for c in ("sessionId", "msgId", "senderId", "receiverId", "localTime",
-                           "msgType", "text", "msgContent") if c in ccols]
-        if use:
-            for r in s.execute("SELECT %s FROM chatmsg" % ",".join(use)).fetchall():
-                d = dict(zip(use, r))
-                if not str(d.get("sessionId") or "").startswith(ME):
-                    continue
-                try:
-                    cur = m.execute("INSERT OR IGNORE INTO chatmsg(%s) VALUES(%s)"
-                                    % (",".join(use), ",".join("?" * len(use))),
-                                    [d.get(k) for k in use])
-                    added += cur.rowcount or 0
-                except Exception:
-                    pass
-        scols = set(x[1] for x in s.execute("PRAGMA table_info(session)").fetchall())
-        suse = [c for c in ("sessionId", "toUserId", "chatType", "unReadCount",
-                            "timestamp", "lastMsgText") if c in scols]
-        if suse:
-            for r in s.execute("SELECT %s FROM session" % ",".join(suse)).fetchall():
-                d = dict(zip(suse, r))
-                if not str(d.get("sessionId") or "").startswith(ME):
-                    continue
-                try:
-                    m.execute("INSERT OR REPLACE INTO session(%s) VALUES(%s)"
-                              % (",".join(suse), ",".join("?" * len(suse))),
-                              [d.get(k) for k in suse])
-                except Exception:
-                    pass
-        s.close()
-        m.commit()
+        import soul_im as _im
+        return _im.merge_memory()
     except Exception as e:
-        log("  !! merge 出错: %r" % (e,))
-    # 昵称映射
-    try:
-        for uid, name in (im.names() or {}).items():
-            m.execute("INSERT OR REPLACE INTO nick(uid,name) VALUES(?,?)", (str(uid), str(name)))
-        m.commit()
-    except Exception:
-        pass
-    m.close()
-    return added
+        log("  !! merge_memory（薄包装）出错: %r" % (e,))
+        return 0
 
 
 def _sid_of(uid):
     try:
-        c = sqlite3.connect(MEMDB)
+        c = sqlite3.connect(_memdb())
         r = c.execute("SELECT sessionId FROM session WHERE toUserId=?", (str(uid),)).fetchall()
         c.close()
         return r[0][0] if r else None
@@ -626,7 +647,7 @@ def _uid_from_sid(sid):
         return None
     s = str(sid).strip()
     try:
-        c = sqlite3.connect(MEMDB)
+        c = sqlite3.connect(_memdb())
         r = c.execute("SELECT toUserId FROM session WHERE sessionId=?", (s,)).fetchone()
         c.close()
         if r and r[0]:
@@ -642,7 +663,7 @@ def _uid_from_sid(sid):
 def _uid_by_name(name):
     """昵称 → uid（累积库 nick 表，精确优先、模糊兜底）"""
     try:
-        c = sqlite3.connect(MEMDB)
+        c = sqlite3.connect(_memdb())
         r = c.execute("SELECT uid FROM nick WHERE name=?", (str(name).strip(),)).fetchall()
         if not r:
             r = c.execute("SELECT uid FROM nick WHERE name LIKE ?",
@@ -658,7 +679,7 @@ def hist_of(sid, limit=24):
     if not sid:
         return []
     try:
-        c = sqlite3.connect(MEMDB)
+        c = sqlite3.connect(_memdb())
         rows = c.execute("SELECT senderId, text, msgContent, localTime FROM chatmsg "
                          "WHERE sessionId=? ORDER BY localTime DESC LIMIT ?",
                          (sid, limit)).fetchall()
@@ -815,6 +836,50 @@ def _has_real_pending(rows):
     return False
 
 
+def _real_pending(st):
+    """当前「真待回」列表（与轮首同一套过滤链）。
+
+    ⭐ 2026-10-06 用户口径「**有新消息来了 该优先回复对方**」：
+      回复循环原来对**轮首快照**遍历，中途来的新消息要等下一轮（实测 ~8min）才轮到；
+      再叠加几个"设备端已无会话"的幽灵各占 ~100s，新消息可能 10 分钟以上没人理。
+      本函数供循环里**每回完一个就复查一次**，谁刚发来就把谁插到队首。
+    """
+    try:
+        pend = im.pending()
+    except Exception as e:
+        log("  !! 插队复查失败: %r" % (e,))
+        return []
+    out = []
+    for p in (pend or []):
+        try:
+            if not (_reachable(p[1]) and not _is_fake_last(p[3]) and _sendable(p[1])):
+                continue
+            if _zombie(p) or _cooling(st, p[1], p[3]) or _abandoned(st, p[1], p[3]):
+                continue
+        except Exception:
+            continue
+        out.append(p)
+    return out
+
+
+def _pend_key(p):
+    """待回排序键（用户 2026-10-06 口径：「② 待回消息 …… 这里加一个**已读待回**」）。
+
+    顺序：**未读待回**（她刚发、我还没看）优先 → 再 **已读待回**（我看过但没回）；
+    同组内按时间 **新 → 旧**。
+    行结构 = (timestamp, name, unread, text, localTime, sessionId, msgType)
+    """
+    try:
+        u = 0 if int(p[2] or 0) > 0 else 1      # 0 = 未读（排前面）
+    except Exception:
+        u = 1
+    try:
+        ts = int(p[0] or 0)
+    except Exception:
+        ts = 0
+    return (u, -ts)
+
+
 def _retire(st, rows):
     """F2：把结构性发不出去的人**停手转人工复核**（不删证据、可逆）。
     落 soul_db status=skipped —— im.pending() 本就按这个状态过滤，会自动从所有队列消失；
@@ -868,8 +933,17 @@ def _screen_has_quota_sheet():
     return any(k in txt for k in QUOTA_KEYS)
 
 
+# ⭐ 2026-10-06 用户要的「塌房自述」护栏（A 方案）：本地模型在上下文极薄时会退化出
+#   自我塌房鬼话（实测「我玩48岁母单」「我也在玩48对的老母」）。这些词在破冰回复里
+#   绝不该出现，命中即剔掉 → 闸后为空 → 触发重生成；全重试失败则降级不发。
+_RED_SELF = re.compile(
+    r"(母单|老母|离异|带娃|二婚|丧偶|单亲)"      # 婚恋/单亲身分词（破冰回复里绝不该出现）
+    r"|玩\s*\d{1,2}\s*[岁对]"                     # 玩NN岁/玩NN对（"玩48岁母单"塌房句式）
+    r"|我\s*\d{1,2}\s*岁"                          # 我NN岁（自曝年龄）
+)
+
 def gate(raw, incoming, n, my_recent=None):
-    """确定性闸：剔复述她/复述我/违禁词/说教词。返回 (可用句, 剔除明细)"""
+    """确定性闸：剔复述她/复述我/违禁词/说教词/塌房自述。返回 (可用句, 剔除明细)"""
     inc = (incoming or "").strip().rstrip("？?。.!！~～")
     mine = [str(x).strip() for x in (my_recent or [])]
     kept, dropped = [], []
@@ -884,12 +958,30 @@ def gate(raw, incoming, n, my_recent=None):
         hit = [b for b in BAN_WORDS if b in ln]
         if hit:
             dropped.append(["违禁词%s" % hit, ln]); continue
+        # ⭐ 2026-10-06（P1#5 内容红线）：违禁词之后再补一道**代码级硬闸** ——
+        #   命中 HARD_BAN（时政/政要/军事/领土/灾难/案件 + 擦边 + 站外导流）即剔除该句。
+        #   这些不是"语气"问题，是**安全红线**，绝不靠模型自觉。单一源：soul_rules.HARD_BAN。
+        # ⭐ 2026-10-06 整改②（消除 fail-open）：红线闸**不可用**时该句**不得放行** ——
+        #   旧写法 `except: pass` 会让未过闸的文本漏出去（fail-open），绝不允许。
+        #   现在任何异常路径都 `dropped.append(["红线闸不可用"]); continue`（丢弃 + 记日志）。
+        _hh = None
+        try:
+            import soul_rules as _R
+            _hh = _R.hard_hit(ln)
+        except Exception as _e:
+            log("  ⚠️ 红线闸不可用（%r）→ 该句按不可放行丢弃：%r" % (_e, ln[:20]))
+            dropped.append(["红线闸不可用"]); continue
+        if _hh:
+            dropped.append(["红线:%s" % _hh]); continue
         rich = [b for b in BAN_RICH if b in ln]
         if rich:
             dropped.append(["装富%s" % rich, ln]); continue
         ph = [p for p in PREACH_WORDS if p in ln]
         if ph:
             dropped.append(["说教%s" % ph, ln]); continue
+        if _RED_SELF.search(ln):
+            dropped.append(["塌房自述", ln])
+            return [], dropped      # ⭐ 整条判废（不是逐句剔）：塌房 → 触发重生成/降级，避免发半截
         if len(ln) > 22:
             dropped.append(["超长%d" % len(ln), ln]); continue
         kept.append(ln)
@@ -897,18 +989,15 @@ def gate(raw, incoming, n, my_recent=None):
 
 
 # ⭐ 2026-10-04 双开人设：实例 N>0 用独立身份；实例0 返回**原字面量**（逐字不变）。
+# ⭐ 2026-10-06 单一数据源：改引用 `soul_rules.IDENT_*`（同一份、且已过双开 rewrite），
+#    不再手抄 —— 此前这里与 soul_rules 各存一份、vm1 还要另走一条分支，迟早分叉。
 def _who(kind):
     """返回「我是谁」身份串。kind ∈ {reply, wake, pick}。"""
     try:
-        import soul_persona as _sp
-        if _sp.vm_index() > 0:
-            a = _sp.ident()
-            if kind == "reply":
-                return "%s（男，%s，穷、不装富、不吹牛）" % (a["name"], a["job"])
-            if kind == "wake":
-                return "%s（男，%s，%s人）" % (a["name"], a["job"], a["city"])
-            if kind == "pick":
-                return "%s（男，%s，穷、不装富、不吹牛，%s人）" % (a["name"], a["job"], a["city"])
+        import soul_rules as _R
+        m = {"reply": _R.IDENT_REPLY, "wake": _R.IDENT_WAKE, "pick": _R.IDENT_PICK}
+        if kind in m:
+            return m[kind]
     except Exception:
         pass
     return {"reply": "江华（男，在厂里上班，穷、不装富、不吹牛）",
@@ -916,8 +1005,98 @@ def _who(kind):
             "pick": "江华（男，在厂里上班，穷、不装富、不吹牛，重庆人）"}[kind]
 
 
-def gen_reply(her_msg, hist, attempt=0, banned=None):
-    """生成回复。attempt>0 = 上一稿被闸剔掉了，换要求重来（**换话题/换说法**）。"""
+def _env_now():
+    """一句话「当前环境」（时间/季节/天气），供提示词结合当下。
+
+    ⭐ 2026-10-06 用户口径：「回复要结合当前时间环境天气等等因素，当然这些是次要的」。
+    由 soul_env 统一提供（带缓存 + fail-open）；任何异常返回 ''，绝不影响回复链路。
+    """
+    try:
+        import soul_env as _env
+        return _env.now_bg()
+    except Exception:
+        return ""
+
+
+def _strategy():
+    """返回「战略铁律」提示词块 —— **单一来源**：直接复用 soul_brain.PERSONA。
+
+    ⭐ 2026-10-06 用户口径：「聊天守则 = 结合天气环境 + 推进关系 + 铁律 让她主动 我享受」。
+
+    核查发现的结构性缺口：
+      · 这条铁律在**在线智囊团**提示词里写了 4 遍（`soul_brain.PERSONA` / `SYSTEM_FAST` /
+        `SYSTEM_DEEP` / `_build_case` 尾块）——智囊团是知道的。
+      · 但**本地模型链路一个字都没有**：`gen_reply()` 全文只有一句
+        「你是江华（男，在厂里上班，穷、不装富、不吹牛）」，没有关系四阶段、
+        没有「她付出我享受」、没有「绝不是我去倒贴」。
+      · 而 `do_reply` 的 `_is_new` 分支让**新对话 100% 走本地模型**
+        （用户 2026-10-06 定稿「奇遇铃/匹配/第一次对话 走本地模型」）
+        ⇒ 破冰期完全缺战略：只会「爽」，不会「推进」，也不会「钓她主动」。
+
+    这里**复用** `soul_brain.PERSONA` 而不是手抄一份：
+      ① 它已过 `soul_persona.rewrite()` 做双开身份隔离（实例1→阿凯/沈阳），复用即自动隔离；
+      ② 守则现在已经散在 6 处硬编码，再加一处手工拷贝迟早分叉 —— 这里刻意做成第 7 处
+         **引用**而非拷贝。
+    任何异常返回 ''（fail-open，绝不让本地回复链路挂掉）。
+    """
+    try:
+        import soul_brain as _SB
+        return _SB.PERSONA
+    except Exception:
+        return ""
+
+
+def _stage_line_of(sid, name=""):
+    """sid (+昵称) → 「当前关系阶段 + 亲密度档位」摘要（供提示词注入）；拿不到 → ''。
+
+    例：
+      `熟悉（41 轮 · 我 15 / 她 26）· 本阶段目标：信息交换 + 情绪共鸣，进入熟人区`
+      `亲密度 L2（按轮数推定） ｜ 本档行动清单：L2 私人化｜生活细节互换：吃啥、住哪…`
+
+    ⭐ 2026-10-06 用户追问「8~12 轮是不是太少了」暴露的缺陷：
+      提示词里只有 PERSONA 那句「每 8~12 轮升温一档」，却**没有任何地方告诉模型现在是第几轮**
+      ⇒ 该规则无法执行（模型不知进度、也不知此人聊了多少轮）；
+      同时阶段判断只活在 `soul_progress`/`soul_review` 两份报告里，生成链路完全不知道阶段。
+      现在注入真实阶段（口径 = 用户 2026-09-29 定：轮 = senderId 变化段数，从基线起算），
+      并接上 `soul_db` 的**亲密度阶梯 L0~L4**（用户「接进链路」；此前是死代码）。
+    fail-open：任何异常返回 ''，绝不影响回复链路。
+    """
+    if not sid:
+        return ""
+    try:
+        import soul_stage as _sg
+        return _sg.turn_line(sid, name)
+    except Exception:
+        return ""
+
+
+def _stuck_line_of(hist):
+    """从 hist 取我最近几句 → 「死磕警报」一行；没死磕 / 异常 → ''。
+
+    ⭐ 2026-10-06 用户批准（审计第 4 条「白跑」）：这个检测原先**只在发送闸里跑**
+      （`soul_reply._topic_stuck_warn`，实测抓到过 风止遇你「鸡蛋」6 轮、初见「稀饭」5 轮、
+      漩涡鸣人「小说」4 轮），但那一行明写「**只告警不阻断**」→ 只 print 给后台看，
+      **生成侧完全不知道**，等于白跑。
+      现在用同一份实现（`soul_rules.stuck_hot`）在**生成前**跑一次，命中就把**脚本实测出的**
+      死磕词直写进提示词「这些词一个都不许再出现」——从泛泛守则升级成**准硬约束**。
+      模型最需要的不是「别死磕」这三个字，而是「**哪个词**别再提」。
+    fail-open：任何异常返回 ''，绝不影响回复链路。
+    """
+    try:
+        import soul_rules as _R
+        mine = [str(h.get("text") or "") for h in (hist or [])
+                if h.get("role") == "me"][-3:]
+        return _R.stuck_line(mine)
+    except Exception:
+        return ""
+
+
+def gen_reply(her_msg, hist, attempt=0, banned=None, stage_line="", stuck_line=""):
+    """生成回复。attempt>0 = 上一稿被闸剔掉了，换要求重来（**换话题/换说法**）。
+
+    stage_line: 「当前关系阶段」一行摘要（soul_stage.turn_line），空串 = 不注入。
+    stuck_line: 「死磕警报」（soul_rules.stuck_line），空串 = 没死磕。
+    """
     ctx = "".join(("我: " if h["role"] == "me" else "她: ") + h["text"] + "\n" for h in hist)
     scarce = "" if len(hist) >= 3 else "（上下文很少，别硬接、别乱猜，回得短一点）\n"
     if attempt > 0:
@@ -925,24 +1104,72 @@ def gen_reply(her_msg, hist, attempt=0, banned=None):
                    "**必须换完全不同的话**：可以反问她、说自己这边的事、或换个新话题，\n"
                    "绝不能再出现下面这些句子（包括意思相近的）：\n%s\n"
                    % ("\n".join("· " + str(b)[:30] for b in (banned or [])[:6]) or "· （你自己刚说过的）"))
-    p = ("【你俩最近的对话，按时间顺序】\n%s\n"
+    # 【优先级·用户 2026-10-06 定稿】本地兜底也按同一套优先级排。
+    #   ⭐ 2026-10-06「单一数据源」：直接引用 soul_rules（与智囊团同一份），不再手抄一份。
+    #   ⭐ 2026-10-06 审计第 5 条「去重」：**这里不再写爽感四要素**——
+    #      `PERSONA` 里的 `PUNCH`（长版，含四个来源详解）已随 `_strat_blk` 注入，
+    #      再叠一份 `PUNCH_BRIEF` 是同一件事讲两遍：8B 小模型不像大模型会「取最严那条听」，
+    #      重复只占预算、冲淡重点。实测去重前本地 prompt 1543 字里有
+    #      `爽感铁律`×1＋`四要素`×1＋`有画面`×3、`一次只说一件事`×2。
+    #      红线禁语（REVERSE/WEAK →FORBID）同样已在 PERSONA 内，也不重复。
+    try:
+        import soul_rules as _R
+        xiang = _R.PRIORITY + "\n"
+    except Exception:
+        xiang = ""
+    # ⭐ 2026-10-06 审计第 4 条：死磕警报（脚本实测，非猜测）；没死磕就是 ''。
+    _stuck_blk = stuck_line if stuck_line else ""
+    _now = _env_now()
+    _strat = _strategy()
+    # ⭐ 2026-10-06：本地模型补「战略铁律」（来源 = soul_brain.PERSONA，单一引用）。
+    #   新对话 100% 走本地 ⇒ 破冰期必须也有「她主动·我享受」，否则只会爽、不会推进。
+    #   ⭐ 2026-10-06 清理：标题里原先那句「来自与智囊团同一份文本」是**实现细节**，
+    #      对模型毫无意义（它不知道什么叫智囊团），纯浪费 token，删掉。
+    _strat_blk = ("【我的战略铁律·最高优先级】\n%s\n\n" % _strat) if _strat else ""
+    # ⭐ 2026-10-06：本地模型也注入「当前关系阶段」（新对话 100% 走本地，最需要知道进度）。
+    _stage_blk = ("【当前关系阶段 + 亲密度档位·用户 2026-09-29 / 09-26 定稿，据此判断该不该升温】\n"
+                  "%s\n"
+                  "（⚠️ 到哪个阶段就做哪个阶段的事：没到不要硬拉，到了就自然往目标走；别跳步。）\n\n"
+                  % stage_line) if stage_line else ""
+    # ⭐ 2026-10-06「塌房禁语」源头拦截（配合 gate 护栏双保险）：8B 模型上下文薄时
+    #   容易退化出「我玩48岁母单」这类自我塌房，从源头禁掉，减少护栏触发重试的浪费。
+    _ban_blk = ("【硬性禁语·踩线整条作废】回复里**绝不允许**出现：年龄数字（如 48岁）、"
+                "「母单/离异/带娃/二婚/丧偶/单亲」、「我玩/我撩/我泡+某人」这类词。\n\n")
+    p = ("%s【你俩最近的对话，按时间顺序】\n%s\n"
          "【她刚发来的这一句】\n%s\n\n"
+         "%s"
+         "%s"
+         "%s"
+         "%s"
+         "%s"
          "你是%s。请**接着上下文**回复她："
          "直接输出 %d 条消息，每行一条、≤20 字、口语、不要编号、不要解释、"
          "**不要重复你自己刚说过的话**、不要复述她的话、不要编造上下文里没有的人和事。%s"
-         % (ctx or "(这是你俩首次对话)\n", her_msg, _who("reply"), N_MSG, scarce))
+         % ((_now + "\n") if _now else "", ctx or "(这是你俩首次对话)\n",
+            her_msg, xiang, _stuck_blk, _strat_blk, _stage_blk, _ban_blk,
+            _who("reply"), N_MSG, scarce))
     return _llm(p, temp=(0.8 if attempt == 0 else 0.95))
 
 
 def gen_wake(name, hist, idle_h):
     ctx = "".join(("我: " if h["role"] == "me" else "她: ") + h["text"] + "\n" for h in hist)
-    p = ("【你和「%s」之前聊过（按时间序）】\n%s\n"
-         "（这段对话已经冷了约 %.0f 小时，最后是我说话、她没接。）\n\n"
-         "你是%s。用你的口吻**换个新话题**自然开口一句，"
-         "≤18 字，口语、轻松、不刻意。**不要问「在吗」「最近好吗」「怎么不理我」**，"
-         "别重复上面出现过的内容，不要说教，不要编造。"
-         "直接输出要发的 1 句，不要引号、不要解释。"
-         % (name, ctx or "(几乎没有聊天记录)", idle_h, _who("wake")))
+    _now = _env_now()
+    # ⭐ 2026-10-06 单一数据源：爽感四要素 + 优先级改引用 soul_rules
+    #   （此前手抄一份，且「重庆式」没过 rewrite → vm1 会漏成重庆话，双开串味）。
+    try:
+        import soul_rules as _R
+        _rules = "⭐ " + _R.PUNCH_BRIEF + "\n" + _R.PRIORITY + "\n"
+    except Exception:
+        _rules = ""
+    p = (("%s【你和「%s」之前聊过（按时间序）】\n%s\n"
+          "（这段对话已经冷了约 %.0f 小时，最后是我说话、她没接。）\n\n"
+          "你是%s。用你的口吻**换个新话题**自然开口一句，"
+          "≤18 字，口语、轻松、不刻意。**不要问「在吗」「最近好吗」「怎么不理我」**，"
+          "别重复上面出现过的内容，不要说教，不要编造。\n"
+          % ((_now + "\n") if _now else "", name, ctx or "(几乎没有聊天记录)",
+             idle_h, _who("wake")))
+         + _rules
+         + "直接输出要发的 1 句，不要引号、不要解释。")
     return _llm(p, temp=0.9)
 
 
@@ -1055,14 +1282,21 @@ def _ensure_device():
 def gen_pick(cand, her_msg, hist):
     """本地 jianghua 从智囊团多条候选里挑最贴合人设的一条（可微调语气，别大改）"""
     ctx = "".join(("我: " if h["role"] == "me" else "她: ") + h["text"] + "\n" for h in hist)
-    p = ("【你俩最近的对话】\n%s\n【她刚发来的这一句】\n%s\n\n"
-         "【智囊团给出的候选话术（每条很短）】\n%s\n\n"
-         "你是%s。"
-         "从候选里**挑 1 条最贴合你人设和当前语境的**，可微调语气但别大改，"
-         "优先挑能勾她主动找你、能推进关系一步、不跪舔不倒贴的那种；"
-         "直接输出那一条（<=20 字），不要解释、不要编号。"
-         % (ctx or "(这是你俩首次对话)\n", her_msg,
-            "\n".join("· " + str(c) for c in cand), _who("pick")))
+    _now = _env_now()
+    # ⭐ 2026-10-06 单一数据源：选择优先级 + 反面清单改引用 soul_rules（不再手抄一份）。
+    try:
+        import soul_rules as _R
+        _rules = _R.PRIORITY + "\n" + _R.NEG_BRIEF
+    except Exception:
+        _rules = ""
+    p = (("%s【你俩最近的对话】\n%s\n【她刚发来的这一句】\n%s\n\n"
+          "【智囊团给出的候选话术（每条很短）】\n%s\n\n"
+          "你是%s。"
+          "从候选里**挑 1 条最贴合你人设和当前语境的**，可微调语气但别大改。\n"
+          % ((_now + "\n") if _now else "", ctx or "(这是你俩首次对话)\n", her_msg,
+             "\n".join("· " + str(c) for c in cand), _who("pick")))
+         + _rules
+         + "直接输出那一条（<=20 字），不要解释、不要编号。")
     return _llm(p, temp=0.7)
 
 
@@ -1082,26 +1316,114 @@ def _split_msg(t, limit=30):
 
 _ACCT_GATE = {"me": None, "ok": True, "ts": 0.0}
 
-def _account_gate_ok():
-    """⭐ 2026-10-05 账号安全闸：设备当前登录账号必须等于本实例配置账号，
-    否则**绝不代发**（模拟器重启/重登后实测会从账号2 切到账号1 —— 串号级事故）。
-    结果缓存 300s，避免每轮都吃 mumu-cli 超时。
+def _account_gate_ok(force=False):
+    """⭐ 2026-10-05 改（用户口径）：**跟随 App 内切号**，不再拒绝发送。
+    ⭐ 2026-10-06 force=True：发送前强制刷新（跳过 60s 缓存），保证 ME/SESS 与设备一致。
+
+    背景：用户放弃「多实例 / 应用内分身」，改为**在 Soul App 里手动切号**。
+    账号本来就会变，原来那套「设备账号 ≠ 配置账号 → 本轮全部跳过」只会把机器人卡死
+    （实测 10-05 22:48 之后一个字都发不出去）。
+
+    新行为：设备当前账号与配置不一致 → **自动把配置同步为当前账号**并继续发送；
+    探测不到（返回 None）→ 放行、保持原配置（fail-open，不因探测抖动误拦）。
+
+    ⭐ 2026-10-05 二次修（用户：「如何确认当前账号 只需要点击导航栏的 自己即可」）：
+    探测源换成 **App prefs 权威字段**（`im.prefs_identity()` → sp_info_gather.userid /
+    soul_startup.sp_key_crash_uid_name）。原因：老办法 `_device_me()` 走的是
+    `active_sess()`「谁最后收到消息」——**切号后会持续猜错**（实测把主号抬头仰望星空
+    96691646 猜成了账号2 离殇 402857053）。prefs 是 App 自己写的当前登录态，切号即时生效。
+    结果缓存 60s（原来是 300s —— 切号后最多要等 5 分钟才跟上，太长）。
     """
     now = time.time()
-    if now - _ACCT_GATE["ts"] < 300:
+    if not force and now - _ACCT_GATE["ts"] < 60:
         return _ACCT_GATE["ok"]
-    ok, dev_me = True, None
+    dev_me = None
     try:
-        dev_me = im._device_me()
-        cfg_me = str(im.ME)
-        if dev_me and dev_me != cfg_me:
-            log("  ⛔ 账号安全闸：设备当前账号 %s ≠ 本实例配置账号 %s → 本轮全部跳过（防串号）"
-                % (dev_me, cfg_me))
-            ok = False
+        # ① 权威探测（prefs）→ 同时给出 uid 与 sess
+        try:
+            p_uid, p_sess = im.prefs_identity(force=True)
+        except Exception:
+            p_uid, p_sess = None, None
+        # ② 兜底探测（库内推断）
+        try:
+            dev_me = p_uid or im._device_me()
+        except Exception:
+            dev_me = p_uid
+        if dev_me:
+            cfg_me = str(im.ME)
+            if dev_me != cfg_me:
+                log("  🔄 账号跟随：设备当前账号 %s ≠ 配置 %s → 已自动同步（App 内切号）"
+                    % (dev_me, cfg_me))
+                try:
+                    im.ME = str(dev_me)
+                except Exception:
+                    pass
+            # ⭐ 2026-10-06 修（P0#3 切号串号）：把探测到的设备账号**同步进 `_acct` 缓存**。
+            #   `_memdb()` / `_state_path()` 都经 `_acct.cur_uid()` 选库/状态文件；只改 `im.ME`
+            #   而 `_acct` 里的 uid 还是旧号（30s 缓存或 override 过期前的旧值）时，`_memdb()`
+            #   会读到**另一个号的累积库** → 串号。dev_me 为真才同步；None 时不动（不猜，fail-closed）。
+            try:
+                _acct.set_uid(str(dev_me))
+            except Exception:
+                pass
+        # 会话密钥也跟随：切号后 IM-SDK-<SESS> 库名 / chat_<SESS> 表名都会变
+        # ⭐ 2026-10-05：优先 prefs 的 crash_uid_name（权威，切号即时），其次库内推断
+        try:
+            dev_sess = p_sess or im._device_active_sess()
+            if dev_sess and dev_sess != im.SESS:
+                log("  🔄 账号跟随：会话密钥 %s… → %s…（切号）"
+                    % (str(im.SESS)[:12], str(dev_sess)[:12]))
+                try:
+                    im.SESS = dev_sess
+                except Exception:
+                    pass
+        except Exception:
+            pass
     except Exception:
         pass
-    _ACCT_GATE.update({"me": dev_me, "ok": ok, "ts": now})
-    return ok
+    _ACCT_GATE.update({"me": dev_me, "ok": True, "ts": now})
+    return True
+
+
+def _brain_within(hist, her_text, budget=None, stage_line="", stuck_line=""):
+    """在 budget 秒内要智囊团候选；超时 / 异常 / 无候选 → None。
+
+    ⭐ 2026-10-06 用户口径：「**先问智囊团，60s 拿不到才用预生成池**」（用于**老对话**）。
+    新对话（她说过 ≤NEW_ROUNDS 轮）**根本不走智囊团**（直接本地层），所以这条预算只对老对话生效；
+    老对话拿不到候选就**不发**（不降级），不会去用预生成池。
+    用后台线程 + `join(budget)` 实现**墙钟硬预算**：智囊团内部的超时（快通道 1 次调用
+    ≤40s；深通道 3 专家并行 + 裁判，最坏 ~80s）只是"单次 http"的上限，叠加起来会超 60s。
+    超时后**不杀线程**（Python 杀不掉），让它自生自灭 —— 它是 daemon 线程，不阻塞退出；
+    它若晚点回来了，结果也只写进 brain.log，不会回来污染这一轮。
+
+    stage_line: 「当前关系阶段」一行摘要（soul_stage.turn_line），透传给智囊团提示词。
+    stuck_line: 「死磕警报」（soul_rules.stuck_line），透传给智囊团提示词（空串 = 没死磕）。
+    """
+    budget = BRAIN_BUDGET if budget is None else budget
+    import threading
+    box = {}
+
+    def _run():
+        try:
+            import soul_brain as _SB
+            box["v"] = _SB.brain_reply(hist, her_text, stage_line=stage_line,
+                                       stuck_line=stuck_line)
+        except Exception as e:
+            box["e"] = e
+
+    t0 = time.time()
+    th = threading.Thread(target=_run, daemon=True)
+    th.start()
+    th.join(budget)
+    if th.is_alive():
+        log("   ⏱ 智囊团 %.0fs 内没出结果 → 判「拿不到」（老对话→不发，不降级）" % budget)
+        return None
+    if "e" in box:
+        log("     !! 在线智囊团异常（%r）" % (box["e"],))
+        return None
+    if box.get("v"):
+        log("   ⏱ 智囊团耗时 %.1fs" % (time.time() - t0))
+    return box.get("v")
 
 
 def do_reply(name, her_text, st, sid_hint=None):
@@ -1110,7 +1432,8 @@ def do_reply(name, her_text, st, sid_hint=None):
     降级保护：智囊团不可用 → 本地 jianghua 生成（原链路）
     """
     # ⭐ 2026-10-05 账号安全闸：设备账号≠配置账号 → 直接跳过，绝不代发（防串号）
-    if not _account_gate_ok():
+    # ⭐ 2026-10-06 force=True：发送前强制刷新，杜绝 ME/SESS 串号导致的校验误判
+    if not _account_gate_ok(force=True):
         return "SKIP"
     # ⭐ 2026-10-04（F1）**sid 优先**：pending() 带出的 sessionId 来自 Soul 自己的会话表，
     #   权威、不依赖 OCR 昵称。原来先按昵称猜 uid，后果有二：
@@ -1129,62 +1452,104 @@ def do_reply(name, her_text, st, sid_hint=None):
     sid = sid_hint or (_sid_of(uid) if uid else None)
     if not sid:
         log("  ⛓ 会话 id 与昵称都没解析出身份 → 本次无历史上下文（%s）" % name)
+    # ⭐ 2026-10-06 用户口径「**没有就算了 不要死磕**」：
+    #   设备端已无此会话（Soul 把本地会话删了）→ 直接放弃，别硬跑 ~100s 的 UI 全路径。
+    #   实测 杨三岁/意中人♑️/甜心姐姐丶/💕小謎 在设备端 33 个库里零命中，每轮却各吃 ~100s，
+    #   一轮 480s 里近一半被它们耗光，还饿死匹配/唤醒流程。
+    #   只在 uid 来自 **sid 权威反查** 时才拦（纯昵称猜出来的 uid 可能是错的，不敢据此判死）；
+    #   设备数据拿不到 → has_device_session 恒 True，照旧走原路径（绝不误杀）。
+    if sid_hint and uid and not im.has_device_session(uid):
+        n = _bump_try(st, name, her_text)
+        log("  ⛔ 设备端已无「%s」的会话（uid=%s，已被 Soul 删除）→ 直接放弃，不硬跑 UI"
+            "（已试 %d 次，够了就自动停手）" % (name, uid, n))
+        return "SKIP"
     hist = hist_of(sid)
     my_recent = [h["text"] for h in hist if h["role"] == "me"]
     log("  「%s」她发来: %s" % (name, str(her_text)[:32]))
+    # ⭐ 2026-10-06 用户口径（定稿）：
+    #   · **匹配来的新用户**（她说过 ≤NEW_ROUNDS 轮）→ 允许用**本地模型**生成（上下文少，够用且快）
+    #   · **超过 NEW_ROUNDS 轮的老对话** → **一律走智囊团**；智囊团拿不到可用候选就**不发**，
+    #     **绝不降级本地**（老对话用弱提示词的本地模型＝死磕旧话题、干巴巴，实测就是这么聊崩的）
+    #   计数口径：hist 里 role=="her" 的条数（她说过几句）。
+    _her_n = sum(1 for h in hist if h.get("role") == "her")
+    _is_new = _her_n <= NEW_ROUNDS
+    _no_draft = False
 
-    # ⭐ 2026-10-05 预生成话术池（soul_pregen 夜间批量）——命中即秒回，仍过确定性闸
-    #   匹配键=昵称+她最后一句原文；任何异常 → None → 走原生成链路（零风险）
-    _pg = None
-    try:
-        import soul_pregen as _pregen
-        _pg = _pregen.take(name, her_text)
-    except Exception as _e:
-        log("     !! 预生成池异常（%r）→ 走原链路" % (_e,))
-    if _pg:
-        gated, dropped = gate("\n".join(_pg), her_text, N_MSG, my_recent)
-        log("   ⚡预生成池命中（%s）→ 闸后: %s | 剔: %s" % (name, gated, dropped))
-    else:
-        gated, raw, dropped = [], "", []
-        _brain_ok = False
+    # ══ 生成链（用户 2026-10-06 定稿，按对话轮数**二分**）══
+    #   · **新对话**（她说过 ≤NEW_ROUNDS 轮）→ **直接走本地层**：预生成池 → 本地模型
+    #       「奇遇铃 / 匹配 / 第一次对话 一直都是本地模型，走本地模型」
+    #       破冰期没有上下文，智囊团本来也用不上；开场白(profile_opening)同样是纯本地。
+    #   · **老对话**（她说过 >NEW_ROUNDS 轮）→ **只走智囊团**（硬预算 BRAIN_BUDGET=60s）；
+    #       拿不到候选就**不发**，绝不降级本地/预生成池。
+    # ⭐ 2026-10-06：算一次「当前关系阶段」，智囊团与本地模型**共用同一行**
+    #   （口径 = soul_stage，与 soul_progress / soul_review 两份报告同源）。
+    _stage_line = _stage_line_of(sid, name)
+    if _stage_line:
+        log("   📊 当前阶段：%s" % _stage_line.replace("\n", " ｜ "))
+    # ⭐ 2026-10-06 审计第 4 条：生成**前**跑一次死磕检测，命中就写进提示词
+    #   （同一份实现 `soul_rules.stuck_hot`，发送侧那个老 _topic_stuck_warn 继续保留作告警）。
+    _stuck_line = _stuck_line_of(hist)
+    if _stuck_line:
+        log("   ⚠️ 死磕警报（注入提示词）：%s" % _stuck_line.replace("\n", " ｜ "))
+    gated, raw, dropped = [], "", ""
+    if _is_new:
+        log("   ↳ 新对话（她说过 %d 轮 ≤ %d）→ 走本地层（预生成池 → 本地模型），不问智囊团"
+            % (_her_n, NEW_ROUNDS))
+        _pg = None
         try:
-            import soul_brain as _SB
-            _bt = _SB.brain_reply(hist, her_text)
-            if _bt:
-                try:
-                    raw, _ms = gen_pick(_bt, her_text, hist)
-                except Exception as e:
-                    log("     !! 本地挑选失败（%r）→ 取第 1 条" % (e,))
-                    raw = _bt[0]
-                gated, dropped = gate(raw, her_text, 1, my_recent)
-                log("   ⭐ 智囊团 %d 条=%s | 本地挑: %r | 闸后: %s | 剔: %s"
-                    % (len(_bt), _bt, raw, gated, dropped))
-                if not gated:
-                    for _t in _bt:            # 挑的这条被闸剔 → 逐条试
-                        _g2, _d2 = gate(_t, her_text, 1, my_recent)
-                        if _g2:
-                            gated, dropped = _g2, _d2
-                            break
-                _brain_ok = bool(gated)
-        except Exception as e:
-            log("     !! 在线智囊团异常（%r）→ 降级本地模型" % (e,))
-
-        if not _brain_ok:
+            import soul_pregen as _pregen
+            _pg = _pregen.take(name, her_text)
+        except Exception as _e:
+            log("     !! 预生成池异常（%r）→ 走本地模型" % (_e,))
+        if _pg:
+            gated, dropped = gate("\n".join(_pg), her_text, N_MSG, my_recent)
+            log("   ⚡预生成池命中（%s）→ 闸后: %s | 剔: %s" % (name, gated, dropped))
+        if not gated:
             for attempt in range(RETRY_MAX):
                 try:
                     raw, ms = gen_reply(her_text, hist, attempt=attempt,
-                                        banned=(raw.splitlines() + my_recent[-3:]))
+                                        banned=(raw.splitlines() + my_recent[-3:]),
+                                        stage_line=_stage_line,
+                                        stuck_line=_stuck_line)
                 except Exception as e:
                     log("     !! 生成失败(第%d次) %s: %r" % (attempt + 1, name, e))
                     continue
                 gated, dropped = gate(raw, her_text, N_MSG, my_recent)
-                log("     [第%d稿] %r | 闸后: %s | 剔: %s" % (attempt + 1, raw, gated, dropped))
+                log("     [第%d次·本地] %r | 闸后: %s | 剔: %s"
+                    % (attempt + 1, raw, gated, dropped))
                 if gated:
                     break
+    else:
+        log("   ↳ 老对话（她说过 %d 轮 > %d）→ 只走智囊团" % (_her_n, NEW_ROUNDS))
+        _bt = _brain_within(hist, her_text, stage_line=_stage_line,
+                            stuck_line=_stuck_line)
+        if _bt:
+            try:
+                raw, _ms = gen_pick(_bt, her_text, hist)
+            except Exception as e:
+                log("     !! 本地挑选失败（%r）→ 取第 1 条" % (e,))
+                raw = _bt[0]
+            gated, dropped = gate(raw, her_text, 1, my_recent)
+            log("   ⭐ 智囊团 %d 条=%s | 本地挑: %r | 闸后: %s | 剔: %s"
+                % (len(_bt), _bt, raw, gated, dropped))
+            if not gated:
+                for _t in _bt:            # 挑的这条被闸剔 → 逐条试
+                    _g2, _d2 = gate(_t, her_text, 1, my_recent)
+                    if _g2:
+                        gated, dropped = _g2, _d2
+                        break
+        if not gated:
+            # 老对话：**不降级本地**，到此为止（下面统一走「不发」分支）
+            _no_draft = True
+            log("   ⚠ 老对话（她说过 %d 轮 > %d）智囊团未出可用候选 → **不发**（不降级本地）"
+                % (_her_n, NEW_ROUNDS))
     if not gated:
         n = _bump_try(st, name, her_text)
-        log("     ⛔ %d 稿全被闸剔空 → **不发**（宁可沉默）；已试 %d 次"
-            % (RETRY_MAX, n))
+        if _no_draft:
+            log("     ⛔ 老对话智囊团无可用候选 → **不发**（不降级本地）；已试 %d 次" % n)
+        else:
+            log("     ⛔ %d 稿全被闸剔空 → **不发**（宁可沉默）；已试 %d 次"
+                % (RETRY_MAX, n))
         return "SKIP"
 
     # ⭐ 2026-10-03 用户方案：字数太多拆成两条短消息发送（拆分条豁免连发闸）
@@ -1248,6 +1613,86 @@ def _wake_forgive(st, name):
         wd.pop(name, None)
 
 
+# ══════════════════════ 🔔 奇遇铃：全局最高优先级 ══════════════════════
+# ⭐ 2026-10-05 用户口径（优先级，**抢占式**）；2026-10-06 补「已读待回」：
+#     ① 奇遇铃  >  ② 待回消息（未读待回 > **已读待回**）  >  ③ 星球匹配  >  ④ 唤醒老联系人
+#   含义：任何时候只要弹出奇遇铃，都要**立刻中断**当前动作（回消息 / 匹配 / 唤醒）
+#   去把铃处理掉（点「立即私聊」进会话 + 发一句开场白），处理完再回到原流程。
+#   铃的判定必须用 soul.is_love_bell()（**当前真的弹着**），不能用聊天列表里的
+#   「奇遇铃-稍后再聊」会话条目 —— 那只表示"最近弹过"，会把已处理的铃一直误判。
+def _bell_live():
+    """当前是否弹着奇遇铃。任何异常一律当"无铃"（绝不因它阻断主流程）。"""
+    try:
+        return bool(soul.is_love_bell())
+    except Exception:
+        return False
+
+
+def _do_love_bell(st, where="轮首"):
+    """第 1 优先级动作：处理奇遇铃。返回 True = 确实处理了一个铃。
+
+    步骤（用户 2026-09-29 铁律「挡路了也要先奇遇铃」）：
+      点「立即私聊」→ 进入与该人的会话 → 发一句开场白（个性化，抓不到走兜底）。
+    """
+    try:
+        name, ok = soul.accept_love_bell()
+    except Exception as e:
+        log("  !! 奇遇铃处理异常: %r" % (e,))
+        return False
+    if not ok:
+        return False
+    st["last_bell"] = time.time()
+    log("  🔔 奇遇铃（%s）→ 已点「立即私聊」，对方「%s」" % (where, name))
+    # ⭐ 2026-10-06 修（P1#4 根因②）：读不出对方昵称 → **不发送，且不静默当已处理**。
+    #   fail-closed：绝不猜人发错对象；返回 False 让上层看到"这个铃本次没处理成"。
+    if not name:
+        log("  ⚠️ 奇遇铃：读不出对方昵称（love_bell_name=None）→ 本次不发送（绝不猜人）")
+        return False
+    # ⭐ 2026-10-06 整改③：开场白**发送前必须过 `gate()`**（红线/违禁/长度等），
+    #   未过闸的句子一律不发（fail-closed）；profile 不过 → 回退 fallback 的**过闸版本**。
+    def _passed(txt):
+        if not txt:
+            return None
+        try:
+            _kept, _dropped = gate(txt, "", 1)
+        except Exception as _e:
+            log("     !! 奇遇铃开场白过闸异常（按不过处理）: %r" % (_e,))
+            return None
+        if _dropped:
+            log("     · 奇遇铃开场白被闸剔除：%s" % (_dropped,))
+        return _kept[0] if _kept else None
+    msg = None
+    try:
+        import soul_match as M
+        msg = _passed(M.profile_opening()) or _passed(M.fallback_opening(name))
+    except Exception as e:
+        log("     !! 奇遇铃开场白生成异常: %r" % (e,))
+    if not msg:
+        log("  ⚠️ 奇遇铃开场白未过闸（profile/fallback 皆不可用）→ 本轮不发送")
+        return True
+    try:
+        with _Tick("奇遇铃·%s" % name, st):
+            # ⭐ 2026-10-06 修（P1#4 根因①）：奇遇铃点完「立即私聊」**已在该人会话页**，
+            #   必须走 `allow_chain=True` 全路径 —— 命中 soul_reply `_on_session_of` 短路
+            #   「已在她的会话页 → 直接发」。走快速路径会先回聊天列表、find 找不到人 → 发不出。
+            _r = _deliver(name, [msg], allow_chain=True)
+        log("     开场白「%s」→ %s" % (msg, _r))
+        if _r == "SENT":
+            _spend(st, 1)
+    except Exception as e:
+        log("     !! 奇遇铃开场白发送异常: %r" % (e,))
+    return True
+
+
+def _bell_preempt(st, where):
+    """抢占检查：动作进行中弹铃 → 立即处理，返回 True（表示被抢占）。
+    在回复循环 / 匹配 / 唤醒的长流程里周期性调用。"""
+    if not _bell_live():
+        return False
+    log("  ⚡ %s 中发现奇遇铃 → 中断当前动作，优先处理铃（第 1 优先级）" % where)
+    return _do_love_bell(st, where=where)
+
+
 def wake_old(st):
     """唤醒老联系人：_follow_mem 从**累积库**选可推进的人 → 生成新话题开场"""
     fol = _follow_mem(min_msgs=10, cool_h=WAKE_MIN_H, max_idle_h=WAKE_MAX_H,
@@ -1259,6 +1704,11 @@ def wake_old(st):
     log("  唤醒候选 %d 人（冷 %.0f~%.0f 小时）" % (len(fol), fol[-1][0], fol[0][0]))
     sent = 0
     for idle_h, name, hers, total, last_text, lt in fol:
+        # 🔔 第 1 优先级抢占：唤醒途中弹铃 → 中断唤醒，优先处理铃
+        if _bell_live():
+            log("  ⚡ 唤醒中发现奇遇铃 → 中断唤醒优先处理铃（第 1 优先级）")
+            _do_love_bell(st, where="唤醒中断")
+            break
         # ⭐ 2026-10-03 抢占：唤醒中途发现真待回 → 立即中断，回去处理新消息
         #   （判据与 do_match._interrupted_daemon 完全一致：可达+非假末条+可发）
         try:
@@ -1330,6 +1780,66 @@ def wake_old(st):
     return sent
 
 
+# ══════════════════ 聊天导航红点（用户 2026-10-06 口径）══════════════════
+# 用户原话：
+#   「匹配之前记得把聊天导航的红点消除完了之后再匹配」
+#   「匹配 3 次之后需要检测一下聊天导航那里有没有红点」
+# 为什么用底导航角标：它是**全局可见**的"还有未读"信号（任何主页面都看得到），
+#   比 `im.pending()`（数据库口径：只看"最后一条真人消息是不是她发的"）更直接 ——
+#   系统卡片能让角标常亮而 pending() 完全看不见。
+# 检测在 `soul_clear_unread.nav_dot()`，自带「底导航必须在屏幕上」的守卫
+#   （否则会话页同一位置的红色「礼物」图标会假阳性，实测 182 红像素）。
+def _chat_nav_dot():
+    """返回 (状态, 红像素数)。状态 ∈ {True=有, False=无, **None=判不了**}。
+
+    None 的场合 = **不在主框架**（会话页/搜索页/官方号消息页）→ 底导航不在屏幕上，
+    既不能说"有"也不能说"没有"。异常一律按 None（判不了）处理，绝不误报、绝不影响主链路。
+    """
+    try:
+        import soul_clear_unread as CU
+        return CU.nav_dot(), CU.nav_badge()
+    except Exception as e:
+        log("     !! 聊天导航红点检测异常（当'判不了'处理）: %r" % (e,))
+        return None, -1
+
+
+def _dot_desc(state):
+    return {True: "有", False: "无", None: "判不了（不在主框架）"}.get(state, "判不了")
+
+
+def dot_block_match(st):
+    """匹配前的红点闸。返回 True = 本轮**不匹配**，先回去回消息。
+
+    ⭐ 2026-10-06 用户口径（两轮定稿）：
+      「匹配之前记得把聊天导航的红点消除完了之后再匹配」
+      「清红点**不是叫你进入返回**，是**进入然后回消息**」
+
+    🔴 为什么**删掉**了原来的「进入→返回」盲扫（`soul_clear_unread.main()`）：
+      ① 它把每一行红点都 tap 进去再 BACK —— 那是**把她的消息标成已读却不回**，
+         正好和"要回消息"相反；
+      ② 遇到「官方号消息」这类**特殊页**，BACK 并不回聊天列表 → 人卡在里面，
+         后面 9 屏"下翻"全空转，紧接的匹配**连续 3 次 no_planet**
+         （实测 02:23~02:27 完整复现）。
+    现在：红点 = 有新消息 → 本轮让位回消息（**回消息本身就会把红点消掉**）；
+    只有连着 DOT_BLOCK_MAX 轮都消不掉（= 系统卡片，根本回不了）才放行匹配。
+    """
+    state, npx = _chat_nav_dot()
+    if state is not True:
+        if state is False:
+            st["dot_block_streak"] = 0          # 确认无红点 → 清零
+        return False                             # 无红点 / 判不了 → 不拦
+    _blk = int(st.get("dot_block_streak", 0))
+    if _blk >= DOT_BLOCK_MAX:
+        st["dot_block_streak"] = 0
+        log("  🔴 聊天导航红点连 %d 轮没被「回消息」消掉 → 判为系统卡片（回不了），放行匹配"
+            % _blk)
+        return False
+    st["dot_block_streak"] = _blk + 1
+    log("  🔴 匹配前：聊天导航红点（红像素 %s）→ **先回去回消息**，本轮不匹配"
+        "（第 %d/%d 次；到上限仍消不掉按系统卡片放行）" % (npx, _blk + 1, DOT_BLOCK_MAX))
+    return True
+
+
 def do_match(st):
     """匹配新人（复用 soul_match，抢占式：中途来消息立刻中断）"""
     try:
@@ -1340,7 +1850,15 @@ def do_match(st):
     # ⭐ 2026-10-03 修「匹配永远空转」：soul_match.interrupted 的让位判据只看昵称可达，
     #   被陌生人预检跳过的人（如 岁岁安然🌸）也算"待回" → 每次匹配 0.5s 就让位。
     #   统一成守护口径：只有「我们真的会回的人」才打断匹配。
+    _bell_hit = {"v": False}
+
     def _interrupted_daemon():
+        # 🔔 第 1 优先级：奇遇铃 > 待回消息。检测到就中断匹配；**不在这里做 UI**，
+        #   交给 match_batch 返回后统一处理（避免打断匹配自身的 UI 操作序列）。
+        if _bell_live():
+            _bell_hit["v"] = True
+            log("  🔔 匹配中发现奇遇铃 → 中断匹配（第 1 优先级）")
+            return (True, [])
         try:
             rows = im.pending() or []
         except Exception:
@@ -1356,9 +1874,39 @@ def do_match(st):
             log("  ⚡ 匹配中发现 %d 个真待回 → 中断匹配优先回消息" % len(reach))
         return (bool(reach), reach)
     M.interrupted = _interrupted_daemon
+    # ⭐ 2026-10-06（用户口径：「匹配的时候 OCR 分析一下剩余次数」）
+    #   点「开始匹配」之前**先读一次星球页额度** —— 用完就别白点 3 次按钮。
+    #   旧行为：连点 3 次都 no_match 才"推断"用完 → 白空转一整轮（5~8 分钟）。
+    #   现在的判据是**读出来**的（soul.soul_quota_left），不是猜的：
+    #     ① 灵魂剩余读到 0             → 用完
+    #     ② 灵魂那行读不到 + 用完弹层在 → 用完（实测：用完时「今日剩余N次」这行会消失）
+    #     ③ 读不到 且 无弹层           → **未知**，行为完全不变（回退 no_match 推断）
     try:
-        names, why = M.match_batch(MATCH_N, dry=False)
-        log("  匹配完成 %s | 结束原因: %s" % (names, why))
+        _ok = M.to_planet()
+        _sq, _vq, _sheet = M.planet_quota() if _ok else (None, None, False)
+        log("  🎫 匹配额度：灵魂 %s / 语音 %s%s"
+            % ("未知" if _sq is None else "%d 次" % _sq,
+               "未知" if _vq is None else "%d 次" % _vq,
+               " ｜ 用完弹层在屏上" if _sheet else ""))
+        if _sq == 0 or (_sq is None and _sheet):
+            log("  ⛔ 灵魂匹配额度已用完（%s）→ 本轮跳过匹配，立刻转唤醒"
+                % ("OCR 读到 0 次" if _sq == 0 else "读不到次数 + 用完弹层在屏"))
+            if _sheet:
+                # 顺手把弹层清掉：它盖住底导航，不清会让后面的导航判定继续失败
+                try:
+                    soul.close_quota_popup()
+                except Exception as e:
+                    log("     !! 清额度弹层异常: %r" % (e,))
+            return (0, ["quota_out"])
+    except Exception as e:
+        log("  !! 匹配额度读取异常（按未知处理，行为不变）: %r" % (e,))
+    try:
+        names, why, reasons = M.match_batch(MATCH_N, dry=False)
+        log("  匹配完成 %s | 结束原因: %s | 细分: %s" % (names, why, reasons))
+        if _bell_hit["v"]:
+            _bell_hit["v"] = False
+            _do_love_bell(st, where="匹配中断")
+            return (0, reasons)
         # ⭐ 2026-10-04 用户口径（改）：没额度**不再停当天匹配**——弹层里点「去聊天」
         #   走免费出口（点它落到聊天列表，聊满一颗心 +5 次）。所以这里只清弹层，
         #   不再记「今天不匹配」的标记。
@@ -1369,10 +1917,355 @@ def do_match(st):
                 log("     !! 清额度弹层异常: %r" % (e,))
         if names:
             _spend(st, len(names))
-        return len(names)
+        return (len(names), reasons)
     except Exception as e:
         log("  !! 匹配异常: %r" % (e,))
-        return 0
+        return (0, ["exception"])
+
+
+# ══════════════════════ 账号轮转（切号决策）══════════════════════
+# 用户口径（2026-10-05 拍板）：
+#   · 切号前提 = **三条同时成立**，且持续 `dry_hold_min`(30) 分钟：
+#       ① 无人可聊（真待回 = 0）
+#       ② **没人可唤醒**（唤醒池 = 0 —— 唤醒不耗匹配次数，池里还有人就没必要切）
+#       ③ 没有匹配次数（灵魂 & 语音「今日剩余」都为 0）
+#   · 连续在线 ≥ `online_max_h`(8h) → **强制切号**（不等三条件）
+#   · 切走后 `cool_h`(4h) 内不得切回该号；两次切号间隔 ≥ `min_gap_min`(30min)
+#   · 只有 2 个号 → 目标即"另一个"；无号可切则原地不动（宁可空转，绝不乱切）
+# 参数在 `soul_accounts.json` 的 rules 里改，不用动代码。
+FORCE_SWITCH_GRACE_MIN = 0     # 8h 到点后允许把手头动作做完的宽限（0 = 立即切）
+QUOTA_CHECK_EVERY = 10 * 60    # 「匹配次数」要开 UI 读，最密 10 分钟一次
+# ⭐ 2026-10-06（P1#11）：切号 UI 连续失败 → 指数退避（防每轮都去点同一个点不到的按钮、狂点模拟器）。
+SWITCH_FAIL_N = 2              # 连续失败达到 N 次开始退避
+SWITCH_FAIL_COOL = 600.0       # 退避基数（秒）：第 N 次失败后 600s，之后每多失败 1 次翻倍
+SWITCH_FAIL_CAP = 7200.0       # 退避上限（秒，2h）
+
+
+def _wake_pool_size(st):
+    """**够得着**的唤醒候选数（排除 永久放弃 / 今天已唤 / 冷却中）。=0 → 没人可唤醒。"""
+    try:
+        fol = _follow_mem(min_msgs=10, cool_h=WAKE_MIN_H, max_idle_h=WAKE_MAX_H,
+                          skip=set((st.get("wake_off") or {}).keys()))
+    except Exception as e:
+        log("  !! 唤醒池统计异常: %r" % (e,))
+        return -1          # 未知 → 调用方不得据此切号
+    # ⭐ 2026-10-06 修（P1#10）：`_follow_mem` 内部异常会返回 None（原为 []，被当 0）→
+    #   这里必须转成 -1（未知），否则"读库失败"会被误判成"唤醒池空了"→ 触发切号。
+    if fol is None:
+        log("  !! 唤醒池未知（_follow_mem 内部异常）→ 本轮不得据此切号")
+        return -1
+    n = 0
+    for idle_h, name, hers, total, last_text, lt in (fol or []):
+        try:
+            if _wake_day(st, name) == _today():
+                continue
+            if _cooling(st, name, "wake"):
+                continue
+        except Exception:
+            pass
+        n += 1
+    return n
+
+
+def _online_hours(book):
+    t0 = book.get("online_since")
+    if not t0:
+        return 0.0
+    try:
+        return (time.time() - float(t0)) / 3600.0
+    except Exception:
+        return 0.0
+
+
+def _dry_eval(st, book, cur):
+    """三条件评估 → (dry, detail)。第③条要开 UI 读星球页，用 QUOTA_CHECK_EVERY 限频。"""
+    # ① 无人可聊
+    try:
+        if _has_real_pending(im.pending() or []):
+            return (False, "有人可聊")
+    except Exception:
+        return (False, "pending 探测失败（未知）")
+    # ② 没人可唤醒 —— ⭐ 2026-10-06 修（用户：「唤醒好友冷却中 或 无人唤醒 → 切号」）：
+    #   旧判据只看「池里有没有人」→ 池里有 8 人但**唤醒还在冷却里**就算"有产能"，
+    #   结果匹配没额度、唤醒又唤不了，机器原地干等 30 分钟（实测 06:47 起纯巡检）。
+    #   正确判据是「**当下**走不走得通」：池空、或池有人但在冷却中 → 都算这条路堵了。
+    wk = _wake_pool_size(st)
+    _lw = float(st.get("last_wake", 0) or 0)
+    _gap = WAKE_EVERY_IDLE if str(st.get("quota_out_date") or "") == _today() else WAKE_EVERY
+    _wk_blocked = ""
+    if wk > 0:
+        if _lw > 0 and (time.time() - _lw) < _gap:
+            _wk_blocked = "唤醒池 %d 人但在冷却中（%d 分钟后才到）" % (
+                wk, int((_gap - (time.time() - _lw)) // 60) + 1)
+        else:
+            return (False, "唤醒池 %d 人（可唤）" % wk)
+    elif wk < 0:
+        # ⭐ 2026-10-06 修（P1#10）：唤醒池**未知**（读库失败）不等于"池空了"→ 不得据此切号。
+        return (False, "唤醒池未知→不切号")
+    else:
+        _wk_blocked = "唤醒池 0 人"
+    # ③ 没有匹配次数（UI，限频）
+    rec = book["acct"].setdefault(cur, {})
+    now = time.time()
+    cached = rec.get("quota")
+    if cached is not None and (now - float(rec.get("quota_at") or 0)) < QUOTA_CHECK_EVERY:
+        sq, vq = cached[0], cached[1]
+    else:
+        try:
+            sq, vq = soul.planet_match_quota()
+        except Exception as e:
+            log("  !! 匹配次数读取异常: %r" % (e,))
+            sq, vq = (None, None)
+        rec["quota"] = [sq, vq]
+        rec["quota_at"] = now
+    if sq is None and vq is None:
+        return (False, "匹配次数未知（读不到星球页额度）")
+    # ⭐ 2026-10-06 修：匹配通道只走**灵魂匹配** → 判"还有没有匹配次数"只看灵魂那一项。
+    #   旧写法取 max(灵魂,语音) → 语音还剩 3 次就判"还有额度" → 干旱不成立 → 不切号，
+    #   可灵魂早就 0 次了（实测 07:03：灵魂读完为 0、语音 3 次，机器就这么原地卡住）。
+    left = sq if sq is not None else 0
+    if left > 0:
+        return (False, "灵魂匹配还有 %s 次（语音 %s）" % (sq, vq))
+    return (True, "待回0 + %s + 灵魂匹配 0 次（语音 %s）" % (_wk_blocked, vq))
+
+
+def _switch_target(cur, book):
+    """下一站账号：冷却期外的其他号（2 个号时即"另一个"）。无 → None。"""
+    R = _acct.rules()
+    cool_s = float(R.get("cool_h", 4)) * 3600
+    now = time.time()
+    for a in _acct.accounts():
+        uid = a["uid"]
+        if uid == cur:
+            continue
+        la = (book.get("acct", {}).get(uid) or {}).get("leave_at")
+        if la and (now - float(la)) < cool_s:
+            log("  ⏸ 账号「%s」冷却中（距切走 %.1fh < %sh）"
+                % (a["nickname"] or uid, (now - float(la)) / 3600.0, R.get("cool_h", 4)))
+            continue
+        return uid
+    return None
+
+
+def _do_switch_account(st, tgt_uid, book, reason, force=False):
+    """App 内切号（自己 → 左上角小人 → 点目标账号行）+ 校验 + 状态迁移。
+
+    ⭐ 2026-10-06 用户定稿：「**8小时优先切号 高于一切**，然后正常切号 排在最后」
+      → force=True（在线超 `online_max_h`）时**跳过下面①的「切号前有人可聊」复查**。
+      实测卡了 6.5 小时（14.4h 远超 8h）却一直「有人可聊 → 放弃切号」。
+    """
+    nick = _acct.nickname_of(tgt_uid)
+    old = book.get("current_uid") or _acct.cur_uid()
+    # ① 切号前复查：这一刻真的没人可聊（防"刚决定切号她就来消息"）
+    # ⭐ 2026-10-06 修「切号死循环」（实测 14:00~14:03 每 16 秒转一圈、切了 8 次都没切走）：
+    #   这里用 `_has_real_pending`（**不看冷却**）→ 两个「重试冷却中（40 分钟内不为它忙）」
+    #   的人（桃桃入梦、梦一场）永远算"有人可聊" → 切号每次被复查否决；
+    #   而回复流程因为冷却又**不会真去回她们** → 切不走也回不了，死循环到天亮。
+    #   判据必须和"我们真的会回的人"一致 → 改用 `_real_pending(st)`（含冷却/僵尸/放弃过滤）。
+    # （`_real_pending` 已含 reachable / sendable / 僵尸 / 冷却 / 已放弃 全套过滤，别再抄一遍）
+    if force:
+        log("  ⛔ 强制切号（在线已超 %sh）→ **跳过「切号前有人可聊」复查**，直接切"
+            % float(_acct.rules().get("online_max_h") or 8))
+    else:
+        try:
+            reach = _real_pending(st)
+        except Exception:
+            reach = []
+        if reach:
+            log("  ⏸ 切号前复查：突然有人可聊（%s）→ 放弃本次切号"
+                % "、".join(str(r[1]) for r in reach[:3]))
+            return False
+    # ② UI
+    ok = False
+    try:
+        if soul.acct_switch_open():
+            ok = soul.acct_switch_pick(nick)
+        else:
+            log("  !! 没进到「切换账号」页（OCR 没看到标题）")
+    except Exception as e:
+        log("  !! 切号 UI 异常: %r" % (e,))
+    if not ok:
+        log("  !! 切号 UI 未完成（没点到「%s」那一行）" % nick)
+        # ⭐ 2026-10-06 现场取证：soul.py 里全是 print，守护是 pythonw（无 stdout）→ 全丢。
+        #   切号失败时把「当前 Activity + 页面文字」抓进守护日志，下次失败不用再盲猜。
+        try:
+            import soul_read as _rd
+            _txt = " | ".join(str(t) for t, _, _ in (_rd.items() or [])[:16])
+            log("     现场：activity=%s" % (soul.activity() or "?"))
+            log("     现场页面文字：%s" % _txt[:260])
+        except Exception as e:
+            log("     (现场取证失败: %r)" % (e,))
+        # ⭐ 2026-10-06 修（P1#11 强制切号失败无退避）：UI 失败 → **记一次连续失败计数**
+        #   （写 switch_state.json），供 `_maybe_switch_account` 做指数退避；否则每轮都去点
+        #   同一个点不到的按钮（狂点模拟器、且毫无进展）。
+        try:
+            _cur = old or _acct.cur_uid()
+            _rec = book.setdefault("acct", {}).setdefault(_cur, {})
+            _rec["switch_fail"] = int(_rec.get("switch_fail") or 0) + 1
+            _rec["switch_fail_at"] = time.time()
+            _acct.save_switch(book)
+            log("     切号失败计数 →「%s」第 %d 次（将进入退避）"
+                % (_acct.nickname_of(_cur), _rec["switch_fail"]))
+        except Exception as _e2:
+            log("     (切号失败计数写入异常: %r)" % (_e2,))
+        return False
+    # ③ 校验：App prefs 必须变成目标号（最多等 20s）
+    got = got_sess = None
+    for _i in range(10):
+        time.sleep(2.0)
+        try:
+            got, got_sess = im.prefs_identity(force=True)
+        except Exception:
+            got, got_sess = (None, None)
+        if str(got) == str(tgt_uid):
+            break
+    if str(got) != str(tgt_uid):
+        log("  ⚠️ 切号校验未通过：prefs 仍为 uid=%s（期望 %s）→ 记失败，下轮重试"
+            % (got, tgt_uid))
+        return False
+    # ④ 状态迁移：先落**旧号** state，再切路径、载**新号** state
+    try:
+        save_state(st)
+    except Exception:
+        pass
+    _acct.set_uid(tgt_uid)
+    try:
+        im.ME = str(tgt_uid)
+        if got_sess:
+            im.SESS = str(got_sess)
+    except Exception:
+        pass
+    try:
+        st.clear()
+        st.update(load_state())
+    except Exception:
+        pass
+    # ⭐ 2026-10-06 用户：「切号后匹配次数要按新号重新算，旧号用完 ≠ 新号用完」。
+    #   旧号留下的「匹配额度用完」标记必须清空，下一轮 do_match 会用 planet_quota()
+    #   重新 OCR **当前账号**的真实剩余次数 → 新号有额度就继续匹配，没额度再重新标记。
+    for _k in ("quota_out_date", "quota_out_at", "silent_note_at"):
+        st.pop(_k, None)
+    try:
+        save_state(st)
+    except Exception:
+        pass
+    now = time.time()
+    for uid in (old, tgt_uid):
+        rec = book["acct"].setdefault(uid, {})
+        rec["dry_since"] = None
+        rec["quota"] = None
+        # ⭐ 2026-10-06（P1#11）：切号**成功 → 清零失败退避计数**（本号/新号都清）。
+        rec["switch_fail"] = 0
+        rec["switch_fail_at"] = None
+    book["acct"][old]["leave_at"] = now
+    book["acct"][tgt_uid]["switches"] = int(book["acct"][tgt_uid].get("switches") or 0) + 1
+    book["current_uid"] = tgt_uid
+    book["online_since"] = now
+    book["last_switch_at"] = now
+    _acct.save_switch(book)
+    log("  ✅ 已切号：「%s」→「%s」｜原因：%s"
+        % (_acct.nickname_of(old), nick, reason))
+    log("     旧号「%s」进入 %sh 冷却；新号在线计时从 0 重新起算"
+        % (_acct.nickname_of(old), _acct.rules().get("cool_h", 4)))
+    # ⑤ 切完先"装真人"：回星球页停一会儿，别立刻发消息
+    try:
+        import soul_match as _M2
+        _M2.to_planet()
+    except Exception:
+        pass
+    time.sleep(8)
+    return True
+
+
+def _maybe_switch_account(st):
+    """每轮评估一次。返回 True = 本轮已切号（调用方应立即结束本轮）。"""
+    try:
+        R = _acct.rules()
+        book = _acct.switch_book()
+        cur = _acct.cur_uid()
+        now = time.time()
+        # ⭐ 2026-10-06 修（P1#11）：切号 UI 连续失败 → **指数退避**（退避期内直接跳过并写日志）。
+        #   否则每轮都去点同一个点不到的按钮（狂点模拟器、毫无进展）。成功会在
+        #   `_do_switch_account` 里清零 → 退避自动解除。
+        _frec = book["acct"].setdefault(cur, {})
+        _nf = int(_frec.get("switch_fail") or 0)
+        if _nf >= SWITCH_FAIL_N:
+            _cool = min(SWITCH_FAIL_COOL * (2 ** (_nf - SWITCH_FAIL_N)), SWITCH_FAIL_CAP)
+            _lastf = float(_frec.get("switch_fail_at") or 0)
+            if _lastf and (now - _lastf) < _cool:
+                log("  ⏸ 切号连续失败 %d 次 → 退避至多 %.0f 分钟内不再尝试（剩 %.0f 分钟）"
+                    % (_nf, _cool / 60.0, (_cool - (now - _lastf)) / 60.0))
+                return False
+        # 首次/换号后记录在线起点
+        if book.get("current_uid") != cur or not book.get("online_since"):
+            book["current_uid"] = cur
+            book["online_since"] = now
+            _acct.save_switch(book)
+            log("  🕒 账号「%s」在线计时起点已记录" % _acct.nickname_of(cur))
+            return False
+        online_h = _online_hours(book)
+        max_h = float(R.get("online_max_h", 8))
+        # ⭐ 2026-10-06 用户定稿优先级：「**8小时优先切号 高于一切**，然后正常切号 排在最后」
+        forced = online_h >= (max_h + FORCE_SWITCH_GRACE_MIN / 60.0)
+        if forced:
+            reason = "连续在线 %.1fh ≥ %sh → 强制切号（**优先于一切**）" % (online_h, max_h)
+        else:
+            dry, why = _dry_eval(st, book, cur)
+            rec = book["acct"].setdefault(cur, {})
+            if not dry:
+                if rec.get("dry_since"):
+                    log("  🌱 恢复产能（%s）→ 干旱计时清零" % why)
+                rec["dry_since"] = None
+                _acct.save_switch(book)
+                return False
+            if not rec.get("dry_since"):
+                rec["dry_since"] = now
+                # ⭐ 2026-10-06（用户：「唤醒冷却中 / 无人唤醒 → 切号」，嫌等太久）：
+                #   当天匹配额度已读完为 0（匹配整天没戏）+ 唤醒也堵着 → 这台机器上
+                #   已经没有活可干，干旱时阀从 30 分钟**收紧**到 dry_hold_fast_min，
+                #   赶紧换号干活，而不是原地空转到天亮。
+                # ⚠️ rules() 里这些键**存在但值可能是 None** → float(None) 直接 TypeError，
+                #    被外层 except 吞掉后整个切号评估静默失效（实测 07:31 撞到）。
+                #    所以统一用 `or` 兜底，不能只给 get 默认值。
+                hold_min = float(R.get("dry_hold_min") or 30)
+                if str(st.get("quota_out_date") or "") == _today():
+                    hold_min = float(R.get("dry_hold_fast_min") or 3)
+                    why += "｜额度用完→快切（%d 分钟）" % hold_min
+                log("  🌵 三条件成立（%s）→ 开始干旱计时（满 %.0f 分钟才切号）"
+                    % (why, hold_min))
+                rec["dry_hold_min_used"] = hold_min
+            else:
+                hold_min = float(rec.get("dry_hold_min_used") or R.get("dry_hold_min") or 30)
+            held = (now - float(rec["dry_since"])) / 60.0
+            _acct.save_switch(book)
+            if held < hold_min:
+                log("  ⏳ 干旱持续 %.0f/%.0f 分钟（等满再切）｜本号在线 %.1fh"
+                    % (held, hold_min, online_h))
+                return False
+            reason = "干旱 %.0f 分钟（%s）" % (held, why)
+        # 切号间隔下限 —— ⭐ 强制切号**不受**它约束（用户：「8小时优先切号 高于一切」）。
+        #   否则在线早就超 8h 的号会被 min_gap 挡住，实测卡了 6 小时没切走。
+        #   唯一还兜着的是 `_switch_target` 的账号冷却（另一个号在冷却中就不切，防来回横跳）。
+        if not forced:
+            last = book.get("last_switch_at")
+            gap_min = float(R.get("min_gap_min") or 30)
+            if last and (now - float(last)) < gap_min * 60:
+                log("  ⏸ 距上次切号仅 %.0f 分钟（下限 %.0f）→ 本次不切"
+                    % ((now - float(last)) / 60.0, gap_min))
+                return False
+        tgt = _switch_target(cur, book)
+        if not tgt:
+            log("  ⏸ 无可切账号（另一个仍在冷却内）→ 原地不动")
+            return False
+        if forced:
+            log("  🔄 触发切号 →「%s」(%s)｜%s" % (_acct.nickname_of(tgt), tgt, reason))
+            log("     ⛔ 强制切号：跳过「距上次切号下限」与「切号前有人可聊」两道拦截")
+        else:
+            log("  🔄 触发切号 →「%s」(%s)｜%s" % (_acct.nickname_of(tgt), tgt, reason))
+        return _do_switch_account(st, tgt, book, reason, force=forced)
+    except Exception as e:
+        log("  !! 切号评估异常: %r" % (e,))
+        return False
 
 
 # ══════════════════════ 主循环 ══════════════════════
@@ -1407,6 +2300,21 @@ def _cycle(st):
             log("  ⏸ 画面不健康 → 本轮跳过 UI 操作（已触发分级恢复）")
             time.sleep(120)
             return
+
+        # ⭐ 2026-10-05 用户优先级第 1 档：奇遇铃最高，抢占一切（> 消息 > 匹配 > 唤醒）。
+        #   处理完**继续**本轮后续（已进入该人会话，可能马上有新消息），不 return。
+        if _bell_live():
+            with _Tick("奇遇铃", st):
+                _do_love_bell(st, where="轮首")
+
+        # ⭐ 2026-10-06 修（P1#9 切号后 ME 滞后）：进主流程前补一次**非强制**账号闸
+        #   （cached 60s）→ 让 ME/SESS 与 `_acct` 缓存先跟上设备，再去 merge_memory()/
+        #   pending()（它们经 `_memdb()` 选库）。发送前 `_deliver` 仍是 force=True，无回归。
+        with _Tick("账号跟随", st):
+            try:
+                _account_gate_ok(force=False)
+            except Exception as e:
+                log("  !! 账号跟随闸异常: %r" % (e,))
 
         with _Tick("累积库合并", st):
             merge_memory()
@@ -1449,9 +2357,34 @@ def _cycle(st):
             _retire(st, dead)
             real = [p for p in real if not _abandoned(st, p[1], p[3])]
 
+        # ⭐ 2026-10-06 用户口径：「② 待回消息 …… 这里加一个**已读待回**」
+        #   → **未读待回优先**（她刚发、我还没看），再排「已读待回」；同组内新→旧。
+        real.sort(key=_pend_key)
+
+        # 🔄 账号轮转评估（三条件 / 8h 强制 / 4h 冷却 / 30min 间隔）
+        #   有真待回时只做「8h 强制」这一条廉价判定；无待回才做完整三条件（含读匹配次数）。
+        with _Tick("账号轮转", st):
+            if _maybe_switch_account(st):
+                time.sleep(3)
+                return          # 本轮已切号 → 下一轮用新账号重新开始
+
         if real:
             log("── 有人在聊：%d 个待回 ──" % len(real))
-            for ts, name, unread, text, lt, _sid6, _mt in real:
+            # ⭐ 2026-10-06 用户口径「**有新消息来了 该优先回复对方**」：
+            #   原来这里是 `for ... in real:` —— 对**轮首快照**遍历，中途她再发新消息
+            #   根本看不到，要等下一轮（实测 ~8min）才轮到；再叠加几个幽灵各占 ~100s，
+            #   新消息实际可能十几分钟没人理。
+            #   现在改成「队列 + 每回完一个就复查一次 pending」：谁刚发来就立刻插到队首。
+            _q = list(real)
+            _tried = set()          # (name, text) 已处理过的 → 同一句不重复回
+            _loop = 0
+            _jumped = False         # ⭐ A：同一轮最多插队 1 次，防「插队风暴」让最老的永远等不到
+            while _q and _loop < 25:
+                _loop += 1
+                ts, name, unread, text, lt, _sid6, _mt = _q.pop(0)
+                # 🔔 第 1 优先级抢占：回消息途中弹铃 → 立即中断去处理铃
+                if _bell_preempt(st, "回复中"):
+                    break
                 if not _hour_budget(st):
                     log("  ⛔ 本小时发送已达上限 %d → 暂停回复" % SEND_CAP_H)
                     break
@@ -1461,7 +2394,20 @@ def _cycle(st):
                 with _Tick("回复·%s" % name, st):
                     do_reply(name, text, st, sid_hint=_sid6)
                 GL.touch("daemon:reply:%s" % name)
-                time.sleep(1.5)
+                _tried.add((str(name), str(text)))
+                time.sleep(0.5)     # ⭐ D：队列紧凑连发（原 1.5s；do_reply 末尾已返回聊天列表，无需再等）
+                # ⚡ 插队复查：这期间她/别人又发来新消息 → 立刻优先回，不等下一轮
+                try:
+                    _fresh = [p for p in _real_pending(st)
+                              if (str(p[1]), str(p[3])) not in _tried]
+                except Exception as _e:
+                    log("  !! 插队复查异常: %r" % (_e,))
+                    _fresh = []
+                if _fresh and not _jumped:
+                    _fresh.sort(key=_pend_key)
+                    log("  ⚡ 期间来了新消息（%s）→ 插队优先回复（本轮仅此一次，防风暴）" % _fresh[0][1])
+                    _q = _fresh + _q
+                    _jumped = True
             st["fail"] = 0
             st["last_match"] = 0        # ⭐ 2026-10-03 首要目标：回复完立即去匹配新人
             time.sleep(POLL_HOT)          # 趁热再看一眼
@@ -1469,22 +2415,136 @@ def _cycle(st):
             now = time.time()
             # ⭐ 2026-10-04 用户口径（改）：**取消**「额度用尽就当天不匹配」。
             #   没额度时照样进星球页匹配；弹出额度弹层就点「去聊天」（见 do_match）。
-            if now - float(st.get("last_match", 0)) >= MATCH_EVERY:
+            # ⭐ 2026-10-06（用户：「怎么还是在一直走匹配啊」）
+            #   确认「匹配这会儿没戏」→ **整段静默**，期间连 to_planet 都不做（省掉 ~100s 无效导航）。
+            #   静默源：① 额度读完为 0（quota_out_at）② 匹配通道故障（match_broken_at）。
+            #   取两者里**最新**的那个；到期（MATCH_SILENT_COOL）自动再试一次。
+            _qo_today = str(st.get("quota_out_date") or "") == _today()
+            _brk_src = float(st.get("match_broken_at", 0) or 0)
+            _brk_silent = _brk_src > 0 and (now - _brk_src) < MATCH_SILENT_COOL
+            _silent = _qo_today or _brk_silent
+            if _silent:
+                # 只在静默开始那一轮说一次，别每分钟刷屏
+                _tag = "额度:" + _today() if _qo_today else "故障:%d" % int(_brk_src)
+                if st.get("silent_note_at") != _tag:
+                    if _qo_today:
+                        log("  ⏸ 今天匹配额度已读完为 0（每日配额，当天不会再有新次数）"
+                            " → **当天不再进匹配**，只走唤醒/巡检；次日自动恢复")
+                    else:
+                        log("  ⏸ 匹配通道故障静默中 → %d 分钟内不再进匹配，只走唤醒/巡检；"
+                            "%d 分钟后再试一次"
+                            % (MATCH_SILENT_COOL // 60,
+                               int((MATCH_SILENT_COOL - (now - _brk_src)) // 60) + 1))
+                    st["silent_note_at"] = _tag
+                st["last_match"] = now      # ⭐ 不刷新则下面条件恒成立 → 每轮都白判一次
+            elif now - float(st.get("last_match", 0)) >= MATCH_EVERY:
+                # ⭐ 2026-10-06 用户口径（两轮定稿）：「匹配前先把聊天导航红点消除完了再匹配」
+                #   +「清红点**不是进入返回**，是**进入然后回消息**」
+                #   → 有红点 = 有新消息：本轮**不匹配**，先回去回消息（回消息本身即消红点）。
+                #   **不做任何盲扫**（盲扫=把消息标已读却不回，还会卡在官方号页出不来）。
+                if dot_block_match(st):
+                    st["fail"] = 0
+                    return            # 立刻进下一轮 → 去看消息（不等 150s 空转）
                 log("── 无人聊 → 星球匹配认识新人 ──")
                 with _Tick("星球匹配", st):
-                    _n = do_match(st)
+                    _n, _rs = do_match(st)
                 st["last_match"] = time.time()
+                # ⭐ 2026-10-06 用户口径：「匹配 3 次之后需要检测一下聊天导航那里有没有红点」
+                #   有红点 = 匹配期间来了新消息 → 消息优先（沿用"有新消息优先回复"的定稿口径）：
+                #   本轮**不唤醒/不切号**，直接结束这一轮 → 下一轮立刻回查消息。
+                _dot_has, _dot_n = _chat_nav_dot()
+                log("  🔎 匹配 %d 次后检测聊天导航红点：%s（红像素 %s）"
+                    % (MATCH_N,
+                       "有 → 优先回去看消息" if _dot_has is True else _dot_desc(_dot_has),
+                       _dot_n))
+                if _dot_has is True:
+                    st["fail"] = 0
+                    return
                 # ⭐ 2026-10-03 额度联动（用户口径：星球页有匹配次数显示，
                 #   额度耗尽就该立刻转唤醒，别干等 30min 定时器）：
                 #   连续 2 轮匹配空手 → 判定额度/候选耗尽 → 本轮立即唤醒。
-                #   （OCR 精确读"匹配次数"待拿到星球页截图后接入 do_match）
+                #
+                # 🔴 2026-10-06 修「误判额度耗尽」（用户当场质疑：
+                #   「匹配次数还有啊 怎么就到了唤醒好友的流程去了」）：
+                #   旧版只看 `_n <= 0` → 把**导航失败**也当成"没额度"。
+                #   实测 00:34 连续 3 次 `no_planet`（**压根没进到星球页**，
+                #   匹配按钮都没点到）却被报成"额度/候选耗尽"→ 本轮匹配白白放弃。
+                #   现在按**细分原因**分流：
+                #     · 全是导航类（no_planet/no_button）→ **不是额度问题**，
+                #       不累加 empty_streak（避免误判耗尽），日志如实写"没进到星球页"
+                #     · 否则（no_match / 混合 / 弹层）→ 才计时耗尽
+                _NAV = ("no_planet", "no_button")
+                _nav_only = bool(_rs) and all(r in _NAV for r in _rs)
+                # ⭐ 2026-10-06（用户：「匹配的时候 OCR 分析一下剩余次数」）
+                #   do_match 已经**读出来**额度用完 → **立刻**转唤醒，不用等「连续 2 轮空手」
+                #   （那是旧的推断路径）。冷却 WAKE_EVERY：匹配间隔才 60s，没冷却会每轮唤醒刷屏。
+                #   两条路都算「读出来的用完」：
+                #     · quota_out = 点按钮**之前**就看到弹层/读到 0 次（do_match 里读的）
+                #     · no_quota  = 点按钮**之后**弹出「今日免费匹配机会已用完」（match_once 读的）
+                _quota_out = ("quota_out" in (_rs or [])) or ("no_quota" in (_rs or []))
+                # ⭐ 2026-10-06 修：当天标记**不能**受下面唤醒冷却的牵连。
+                #   旧写法把它塞进 `if _qo_fire:` 里 → 冷却期内 `_qo_fire` 恒 False
+                #   → `quota_out_date` 永远是 None → 静默**从来没生效过**（实测 06:39~06:42
+                #   连续 3 轮照进匹配，每轮白烧 ~23s）。状态标记与节流必须解耦。
+                if _quota_out and str(st.get("quota_out_date") or "") != _today():
+                    st["quota_out_date"] = _today()
+                _qo_today = str(st.get("quota_out_date") or "") == _today()
+                # 匹配当天没戏 → 唤醒是唯一活儿，间隔也跟着收紧（WAKE_EVERY → WAKE_EVERY_IDLE）
+                _wake_gap = WAKE_EVERY_IDLE if _qo_today else WAKE_EVERY
+                _qo_since = float(st.get("quota_out_at", 0) or 0)
+                _qo_cool = (_qo_since > 0) and (now - _qo_since < _wake_gap)
+                _qo_fire = _quota_out and (not _qo_cool)
+                # ⭐ 2026-10-06 兜底（用户现场报「匹配用完了不走唤醒」）：
+                #   `match_nav_fail_streak` 以前是个**只写不读的死变量** —— 连续二十几次
+                #   `no_planet` 也判不出「耗尽」，匹配就这么空转到天亮。
+                #   现在：连续 ≥MATCH_NAV_FAIL_MAX 次导航失败 = **匹配通道故障** → 转唤醒。
+                # ⚠️ 防刷屏：故障态下不能每轮都唤醒（匹配间隔才 60s）。判故障后记
+                #   `match_broken_at`，冷却 WAKE_EVERY(30min) 内只简写一行，不再重复唤起。
+                _broken_since = float(st.get("match_broken_at", 0) or 0)
+                _broken_cool = (_broken_since > 0) and (now - _broken_since < WAKE_EVERY)
                 if _n <= 0:
-                    st["match_empty_streak"] = int(st.get("match_empty_streak", 0)) + 1
+                    if _nav_only:
+                        st["match_nav_fail_streak"] = int(st.get("match_nav_fail_streak", 0)) + 1
+                        _s = st["match_nav_fail_streak"]
+                        if _broken_cool:
+                            log("  ⚠ 匹配仍进不去星球页（%s）｜故障态冷却中，%d 分钟后才再唤起"
+                                % (",".join(sorted(set(_rs))),
+                                   int((WAKE_EVERY - (now - _broken_since)) // 60) + 1))
+                        else:
+                            log("  ⚠ 匹配**没执行**（%s）→ 不是额度问题：没进到星球页/点不到按钮"
+                                "（连续第 %d 次，满 %d 次判故障→转唤醒，不再干等 30min）"
+                                % (",".join(sorted(set(_rs))), _s, MATCH_NAV_FAIL_MAX))
+                    elif _quota_out:
+                        # 额度用完是**读出来**的确定结论，不进"空手连击"计数（那套是猜的）
+                        st["match_empty_streak"] = 0
+                        st["match_nav_fail_streak"] = 0
+                        if _qo_cool:
+                            log("  ⚠ 灵魂匹配额度仍为 0 ｜冷却中，%d 分钟后才再唤起"
+                                % (int((WAKE_EVERY - (now - _qo_since)) // 60) + 1))
+                    else:
+                        st["match_empty_streak"] = int(st.get("match_empty_streak", 0)) + 1
+                        st["match_nav_fail_streak"] = 0
                 else:
                     st["match_empty_streak"] = 0
+                    st["match_nav_fail_streak"] = 0
+                    if "match_broken_at" in st:
+                        del st["match_broken_at"]     # ⭐ 匹配恢复 → 解除故障态
                 _exhausted = int(st.get("match_empty_streak", 0)) >= 2
-                if _n <= 0 and (_exhausted or now - float(st.get("last_wake", 0)) >= WAKE_EVERY):
-                    if _exhausted:
+                _nav_streak = int(st.get("match_nav_fail_streak", 0))
+                _nav_broken = (_nav_streak >= MATCH_NAV_FAIL_MAX) and (not _broken_cool)
+                if _n <= 0 and ((not _nav_only and (_exhausted or now - float(st.get("last_wake", 0)) >= WAKE_EVERY))
+                                or _nav_broken or _qo_fire):
+                    if _qo_fire:
+                        log("  ⛔ 灵魂匹配额度已用完（OCR 读出来的，不是猜的）→ 立刻转唤醒老联系人")
+                        st["quota_out_at"] = now
+                        # （当天标记 quota_out_date 已在上面**无条件**设置，不随冷却走）
+                    elif _nav_broken:
+                        log("  ⛔ 匹配通道故障：连续 %d 次进不到星球页/点不到按钮"
+                            "（根因可能是额度用完、星球页改版、或 App 卡死）"
+                            " → 不再干等，立刻转唤醒老联系人" % _nav_streak)
+                        st["match_broken_at"] = now
+                        st["match_nav_fail_streak"] = 0     # ⭐ 本次已响应，重新数
+                    elif _exhausted:
                         log("  ⤵ 连续 %d 轮匹配无结果 → 判定额度耗尽 → 立即唤醒老联系人"
                             % st["match_empty_streak"])
                     else:
@@ -1495,7 +2555,9 @@ def _cycle(st):
                     st["match_empty_streak"] = 0      # ⭐ 唤醒后重新计数
             # ⭐ 2026-10-03 口径更新（用户）：不管匹配有无额度，唤醒照常推进——
             #   匹配、唤醒各自到点就跑，互不互斥（额度联动仅作"提前唤醒"加速器）
-            if now - float(st.get("last_wake", 0)) >= WAKE_EVERY:
+            # 当天额度读完为 0（匹配整天不跑）→ 唤醒间隔收紧，别让机器空转
+            _wgap = WAKE_EVERY_IDLE if str(st.get("quota_out_date") or "") == _today() else WAKE_EVERY
+            if now - float(st.get("last_wake", 0)) >= _wgap:
                 log("── 无人聊 → 唤醒老联系人（与匹配并行推进）──")
                 with _Tick("唤醒老人", st):
                     wake_old(st)
@@ -1605,15 +2667,21 @@ def _singleton():
     """
     try:
         import ctypes
-        _MUTEXH = ctypes.windll.kernel32.CreateMutexW(None, False,
-                                                      "SoulDaemon_%s" % VM)
-        if not _MUTEXH:
+        # ⭐ 2026-10-06 修（P1#12）：照抄 `_daemon_guard.py:192-196` 的正确写法。
+        #   旧写法 `ctypes.windll.kernel32.CreateMutexW(...)` 之后再调 `GetLastError()`：
+        #   ctypes 默认不保存 last-error，两次调用之间 Python 自身的 Win32 调用会把错误码
+        #   冲掉 → ERROR_ALREADY_EXISTS(183) 经常读不到 → 第二个 daemon 以为自己是唯一
+        #   → 双守护同时写同一份 wshot.png + 同时驱动同一台设备互相打架。
+        #   正确姿势：use_last_error=True + ctypes.get_last_error()。
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        h = k32.CreateMutexW(None, False, "SoulDaemon_%s" % VM)
+        if not h:
             return False
-        if ctypes.windll.kernel32.GetLastError() == 183:  # ERROR_ALREADY_EXISTS
-            ctypes.windll.kernel32.CloseHandle(_MUTEXH)
+        if ctypes.get_last_error() == 183:  # ERROR_ALREADY_EXISTS
+            k32.CloseHandle(h)
             log("已有守护进程（内核互斥）在跑 → 本进程退出")
             return False
-        globals()["_MUTEXH"] = _MUTEXH
+        globals()["_MUTEXH"] = h
     except Exception as _e:
         log("内核互斥异常 %r → 退化文件锁" % (_e,))
     try:
@@ -1682,6 +2750,19 @@ def main():
         log("  (预热模型跳过: %r)" % (e,))
 
     st = load_state()
+    # ⭐ 2026-10-05：启动时清僵尸锁——上轮 daemon 崩溃/被杀后锁文件残留，
+    #   新 daemon 启动看到「锁被占用」就 sleep(POLL_IDLE) 等待，但如果锁在
+    #   sleep 期间被外部删除（或心跳超时），daemon 不会重试直接退出。
+    #   启动时强制删一次锁文件：能删说明是僵尸锁（真在跑的轮次会持文件句柄，
+    #   删不掉），删完下一轮 cycle 就能正常 start_round。
+    try:
+        import soul_global_lock as _GL
+        _lf = _GL.lock_file()
+        if os.path.exists(_lf):
+            os.remove(_lf)
+            log("[锁] 启动时清理残留锁文件")
+    except OSError:
+        pass  # 删不掉 = 真有人在跑，不动它
     if once:
         log("（--once 模式：只跑一轮）")
         t0 = time.time()
