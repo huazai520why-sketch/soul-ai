@@ -34,7 +34,11 @@ import soul_read as rd
 
 NEXT_BTN = "匹配下一个"
 MATCH_ENTRY = ("灵魂匹配", "开始匹配")
-SESSION_HINT = ("交换答案", "礼仪分", "匹配度", "查看主页", "文明聊天")
+# ⭐ 2026-10-06：Soul 新版匹配成功落在**匹配卡片页**（共同点/引力签/星球/打招呼），
+#   老特征词全 miss → match_once 误判 no_match → 匹配成功的人没发开场白被 ghost。
+#   并入卡片页高频词（刻意避开「聊天」单词等泛词，防误判别的页面）。
+SESSION_HINT = ("共同点", "引力签", "打招呼", "匹配度", "查看主页",
+                "交换答案", "文明聊天", "礼仪分", "Ta的", "发消息")
 
 # ⭐ 2026-10-06（用户：「匹配的时候 OCR 分析一下剩余次数」）
 #   to_planet() 成功时**就地**留一份「星球页那一帧」的 OCR 结果，
@@ -566,6 +570,7 @@ def match_once(opening=None, dry=False, wait_match=30):
         return (None, "no_button")
 
     print(f"  点「{kw}」({btn[0]},{btn[1]})")
+    _t0 = time.time()                       # 点匹配按钮前的时间锚（no_match 数据库兜底用）
     soul.tap(*btn)
 
     got = False
@@ -592,10 +597,49 @@ def match_once(opening=None, dry=False, wait_match=30):
         if _qk and any(any(k in (t or "") for k in _qk) for t, _, _ in _it):
             print("  ⛔ 点出「今日免费匹配机会已用完」弹层 → 额度确实用完（读出来的，不是猜的）→ 立刻收手")
             return (None, "no_quota")
+    # ⭐ 2026-10-06 数据库兜底（修「匹配成功落在匹配卡片页 → OCR 特征全 miss → 误判 no_match
+    #   → 匹配成功的人没发开场白被 ghost」）：
+    #   OCR 认不出卡片页，但**匹配成功必在 IM 库落一条新会话**（系统卡片/招呼消息）。
+    #   所以 OCR 说没中时，再拉一次库：若出现 _t0（点按钮前）之后**新出现**的会话
+    #   （首条消息也在 _t0 之后 —— 排除老会话恰好来新消息，那种 interrupted() 会抓）
+    #   → 其实匹配上了，取该会话昵称照常发开场白。整段异常必须按原样 no_match。
+    _db_name = None
+    if not got:
+        try:
+            time.sleep(3)                       # 给 App 落库留缓冲
+            import sqlite3 as _sq
+            import soul_im as im
+            im.pull()
+            c = _sq.connect("file:%s?mode=ro" % im.IMDB.replace("\\", "/"), uri=True, timeout=5)
+            try:
+                _sid = None
+                for sid, mn, mx in c.execute(
+                        "SELECT sessionId, MIN(localTime), MAX(localTime) FROM chatmsg "
+                        "GROUP BY sessionId"):
+                    try:
+                        ts = float(mn or 0)     # 首条消息时间；localTime 有毫秒/秒两种口径
+                    except Exception:
+                        continue
+                    if ts > 1e12:
+                        ts /= 1000.0
+                    if ts > _t0:
+                        _sid = sid
+                        break
+                if _sid:
+                    r = c.execute("SELECT toUserId FROM session WHERE sessionId=?",
+                                  (_sid,)).fetchone()
+                    _uid = str(r[0]) if r and r[0] else ""
+                    _db_name = (im.names() or {}).get(_uid) if _uid else None
+                    got = True
+                    print(f"  ✅ OCR 未认出但库里出现新会话（{_db_name or _uid or _sid}）→ 按匹配成功走")
+            finally:
+                c.close()
+        except Exception as _e:
+            print(f"  ⚠️ no_match 数据库兜底失败（{_e!r}）→ 按原样判 no_match")
     if not got:
         return (None, "no_match")
 
-    name = partner_name() or "?"
+    name = partner_name() or _db_name or "?"
     print(f"  匹配到「{name}」")
     if dry:
         return (name, "dry")
