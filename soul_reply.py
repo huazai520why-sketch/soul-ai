@@ -571,6 +571,31 @@ def _hit(name):
             return cx, cy
     if os.environ.get("SOUL_NAME_EXACT") == "1":
         return None
+    # ⭐ 2026-10-07 修「长昵称截断找不到人」（真实事故）：目标「伴疏影静守山河」在
+    #   聊天列表被 Soul 截断显示为「伴疏影静守山..配」（前6字+..+「匹配」标签被 OCR
+    #   粘连）→ 精确/子串三级全 miss → 误判"不在本屏"往下滑 6 屏也找不到 →
+    #   消息 30+ 分钟发不出去、4 轮重复空转。
+    #   列表长昵称必被截成「前 N 字..」→ 加「截断前缀」一级：屏上文本去掉
+    #   「..及之后」后是目标昵称的前缀（≥4 字）且全屏唯一 → 命中（沿用防串台闸）。
+    pref = {}
+    for t, cx, cy in items:
+        _tn = _norm_name(t)
+        head = re.split(r"\.\.|…", _tn)[0]
+        if len(head) >= 4 and head != _want and (
+                _want.startswith(head)
+                or (len(_core_want) >= 4 and _core_want.startswith(_skeleton(head)))):
+            pref.setdefault(_tn, (cx, cy))
+    if len(pref) == 1:
+        only = list(pref.keys())[0]
+        if _is_other_person(only) or _embeds_other_nick(only, name):
+            print(f"⛔ 截断前缀命中「{only}」指向库里**另一个人**（目标「{name}」）→ 拒绝，防串台")
+            return None
+        print(f"⚠️ 昵称截断前缀命中：「{name}」→「{only}」（列表截断显示）")
+        return list(pref.values())[0]
+    if len(pref) > 1:
+        print(f"⛔ 昵称「{name}」截断前缀命中 {len(pref)} 个不同的人 "
+              f"{list(pref.keys())} → 拒绝，防串台")
+        return None
     # 2) 子串，收集所有不同的候选昵称
     cands = {}
     for t, cx, cy in items:
