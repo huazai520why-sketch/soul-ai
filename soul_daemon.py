@@ -2250,15 +2250,25 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                 _main = bool(soul.on_main())
             except Exception:
                 _main = True
+            # ⭐ 2026-10-07：会话页判据补 activity —— 新版会话页输入框占位符是
+            #   「文明聊天，友善交友~」，不含「发送/发消息/录音/按住说话」→ `_mode()`
+            #   返回 unknown → 正常会话页被误判成"不是聊天框"（实测 01:37 y=1091/790
+            #   进了会话却报 mode=unknown）。改用仓库既有约定：activity 含 Conversation。
+            try:
+                _a = soul.activity() or ""
+            except Exception:
+                _a = ""
+            _is_conv = ("Conversation" in _a) or ((not _main) and _m in ("text", "voice", "rec"))
             # ⭐ 2026-10-07：本行**末条非真话**（系统卡片/平台通知）→ 进入只为清红点，
             #   看清是不是会话页后立即返回，**绝不回复**（无可回内容，也不涉标已读真消息）。
             if _ptext is None:
-                if (not _main) and _m in ("text", "voice", "rec"):
-                    log("  🧹 红点进「%s」= 会话页但末条非真话（系统卡片/平台通知）"
-                        "→ 已清红点，返回（不回复）" % _pname)
+                if _is_conv:
+                    log("  🧹 红点进「%s」= 会话页（%s）末条非真话（系统卡片/平台通知）"
+                        "→ 已清红点，返回（不回复）"
+                        % (_pname, (_a.split('.')[-1] or "?")))
                 else:
-                    log("  ↩ 红点进 y=%d 不是正常聊天框（mode=%s, on_main=%s）→ 记未处理"
-                        % (y, _m, _main))
+                    log("  ↩ 红点进 y=%d 不是会话页（activity=%s, mode=%s）→ 记未处理"
+                        % (y, (_a.split('.')[-1] or "?"), _m))
                     _unresolved = True
                 try:
                     _backs()
@@ -2266,7 +2276,7 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                     log("  !! _dot_sweep _backs 异常: %r" % (e,))
                     _unresolved = True
                 break
-            if (not _main) and _m in ("text", "voice", "rec"):
+            if _is_conv:
                 # e. 正常聊天框 → 用**前置守卫已确认**的身份真回复（绝不只进入就返回）
                 name, sid6 = _pname, _psid
                 # 她末句**以数据库为准**（pending 的 p[3]，或用会话 id 从正式库刷新）——
