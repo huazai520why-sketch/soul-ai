@@ -422,6 +422,23 @@ def interrupted():
     return (bool(reach), reach)
 
 
+def _chat_nav_dot():
+    """底导航「聊天」tab 有没有红点 → True / False / None（判不了）。
+
+    ⭐ 2026-10-07 用户口径：「匹配前检测一次新消息 匹配完再检测一次；
+      检测方式为进入星球页面、点匹配动作之前截图，查看聊天导航是否有红点」。
+    复用 soul_clear_unread.nav_dot()（自带「底导航必须在屏」守卫：
+    OCR 同时含「星球」+「广场」才判，否则 None）。
+    🔴 None = 判不了（不在主框架/读屏失败）—— 调用方**绝不**把 None 当"有"。
+    """
+    try:
+        import soul_clear_unread as CU
+        return CU.nav_dot()
+    except Exception as e:
+        print(f"  !! 聊天导航红点检测失败（按'判不了'放行）: {e!r}")
+        return None
+
+
 # ==================== 导航 ====================
 def to_planet():
     """回到星球页（会话页→返回→星球tab）"""
@@ -547,7 +564,8 @@ def partner_name():
 # ==================== 单次匹配 ====================
 def match_once(opening=None, dry=False, wait_match=30):
     """匹配一次并发开场白。返回 (昵称, 状态)
-    状态: sent / dry / no_match / no_button / no_planet / interrupted_by_msg
+    状态: sent / sent_pending（已发出但复查发现红点，需中断去回消息）/
+          dry / no_match / no_button / no_planet / interrupted_by_msg
     """
     # 更新全局锁心跳（跨实例互斥用）
     try:
@@ -560,6 +578,13 @@ def match_once(opening=None, dry=False, wait_match=30):
         return (None, "interrupted_by_msg")
     if not to_planet():
         return (None, "no_planet")
+
+    # ⭐ 2026-10-07 用户口径：「匹配前检测一次新消息」—— 已进入星球页、
+    #   点匹配动作之前，截图看聊天导航有没有红点：有 = 有新消息 → 消息优先，
+    #   立刻中断去回消息（本次不匹配）。None=判不了 → 不拦（绝不把判不了当有）。
+    if not _FORCE and _chat_nav_dot() is True:
+        print("  🔴 点匹配前：聊天导航有红点 → 有新消息，先去回消息（本次不匹配）")
+        return (None, "interrupted_by_msg")
 
     items = rd.items()
     btn, kw = None, None
@@ -658,6 +683,16 @@ def match_once(opening=None, dry=False, wait_match=30):
     time.sleep(1.5)
     ok = verify_sent(msg, timeout=12)
     print(f"  开场白: {msg} → {'✅' if ok else '❌'}")
+    # ⭐ 2026-10-07 用户口径：「匹配完再检测一次」—— 发完开场白回星球页，
+    #   截图复查聊天导航红点：有 = 匹配期间来了新消息 → 上报 sent_pending
+    #   （本次已发出、名字照计，上层中断本批立刻去回消息）。
+    if not _FORCE:
+        try:
+            if to_planet() and _chat_nav_dot() is True:
+                print("  🔴 匹配后复查：聊天导航有红点 → 有新消息，先去回消息")
+                return (name, "sent_pending")
+        except Exception as e:
+            print(f"  !! 匹配后红点复查异常（按无红点处理）: {e!r}")
     return (name, "sent" if ok else "send_failed")
 
 
@@ -688,6 +723,10 @@ def match_batch(n=3, dry=False):
         else:
             reasons.append(res)
             print(f"  未匹配到（{res}）")
+        # ⭐ 2026-10-07：匹配后复查发现聊天导航红点（本次已发出，名字已计 done）
+        #   → 消息优先，中断本批，上层立刻去回消息。
+        if res == "sent_pending":
+            return (done, "pending", reasons)
         time.sleep(1.5)
     return (done, "done", reasons)
 
