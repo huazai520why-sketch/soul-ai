@@ -2399,6 +2399,14 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
 
     if _unresolved:
         return "unresolved"
+    # ⭐ 2026-10-07：收尾前先把页面拉回聊天列表 —— 系统/官方行可能落在 H5/官方页，
+    #   此时 nav_dot() 读不到底导航 → 返回 None → 被 dot_block_match 判成"红点仍在"
+    #   （实测 04:11 编号红点已全 0，却报「清扫后红点仍在（判不了（不在主框架））」）。
+    try:
+        if not sr._on_chat_list():
+            sr._goto_chat_list()
+    except Exception:
+        pass
     try:
         return CU.nav_dot()
     except Exception:
