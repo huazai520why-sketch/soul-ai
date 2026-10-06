@@ -2016,6 +2016,27 @@ def _dot_row_name(items, y):
     return [s for _, s in out]
 
 
+# 系统/官方行强特征（2026-10-07）：这类"会话"不是真人，进去只会看到通知卡片/话题页。
+#   它们**永远不在 pending() 里**（pending 只认「末条真话是她发的」），于是被身份闸
+#   永久跳过 → 红点永远清不掉（实测 屏3 卡死：[话题]假期假期不要走 / 官号 / 官方号消息）。
+#   放行它们「进入+返回」是**安全的**：里面没有"她的未读真话"，不存在「标已读却不回」的 M1 风险。
+#   ⚠️ 刻意**只收强特征**（'官号'这类），不收「通知/活动/关注/推荐」等泛词 ——
+#      红点行的候选里也含**消息预览**，泛词会撞上真人聊天内容 → 误判成系统行 → 误进真人会话。
+_SYS_ROW_KW = ("官号", "官方号消息", "系统通知", "系统消息", "官方消息",
+               "Soul空间站", "奇遇铃", "小助手")
+
+
+def _sys_row(cands):
+    """红点行的候选文本是否命中「系统/官方行」强特征。"""
+    for c in (cands or []):
+        s = str(c or "").strip()
+        if s.startswith("[话题]") or s.startswith("【话题】"):
+            return True
+        if any(k in s for k in _SYS_ROW_KW):
+            return True
+    return False
+
+
 def _row_sid(items, y):
     """红点行 y → (name, sid)：用 OCR 昵称去累积库 nick 表**严格唯一**匹配。
 
@@ -2249,16 +2270,24 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                 log("  !! _dot_sweep 读屏失败: %r" % (e,))
                 _items = []
             _pre = _resolve_row(_items, y, _pend_cache, st)
+            # ⭐ 2026-10-07：把**候选昵称**打进日志 —— 否则只看到"解析不出身份"，
+            #   不知道是哪个昵称、为何失败（不在 nick 表 / 多个命中）。
+            try:
+                _cn = _dot_row_name(_items, y)
+            except Exception:
+                _cn = []
+            _soft = False          # True = 系统/官方行：进入只为清红点，"进错页"不算未处理
             if not _pre:
-                # ⭐ 2026-10-07：把**候选昵称**打进日志 —— 否则只看到"解析不出身份"，
-                #   不知道是哪个昵称、为何失败（不在 nick 表 / 多个命中）。
-                try:
-                    _cn = _dot_row_name(_items, y)
-                except Exception:
-                    _cn = []
-                log("  ⏭ 红点行 y=%d 解析不出**会话身份**（候选=%s）；pending 无、昵称也唯一匹配不上"
-                    "→ 跳过、绝不 tap（防进错人）" % (y, _cn))
-                continue
+                if _sys_row(_cn):
+                    # 系统/官方/话题行 → 不是真人会话，进"进入+返回"清红点（只清不回）
+                    _pre = (_cn[0] if _cn else "系统行", None, None)
+                    _soft = True
+                    log("  🔎 红点行 y=%d 是系统/官方行（候选=%s）→ 进入清红点（只清不回）"
+                        % (y, _cn))
+                else:
+                    log("  ⏭ 红点行 y=%d 解析不出**会话身份**（候选=%s）；pending 无、昵称也唯一匹配不上"
+                        "→ 跳过、绝不 tap（防进错人）" % (y, _cn))
+                    continue
             _pname, _ptext, _psid = _pre
             rows += 1
             acted = True
@@ -2298,6 +2327,11 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                     log("  🧹 红点进「%s」= 会话页（%s）末条非真话（系统卡片/平台通知）"
                         "→ 已清红点，返回（不回复）"
                         % (_pname, (_a.split('.')[-1] or "?")))
+                elif _soft:
+                    # 系统/官方行落在非会话页（专题页/官方 WebView）= **预期内**，
+                    # 不是"进错人"。红点由"点进去看过了"清掉 → 不当未处理。
+                    log("  🧹 红点进 y=%d 系统/官方行落在非会话页（activity=%s）→ 视为已清，返回"
+                        % (y, (_a.split('.')[-1] or "?")))
                 else:
                     log("  ↩ 红点进 y=%d 不是会话页（activity=%s, mode=%s）→ 记未处理"
                         % (y, (_a.split('.')[-1] or "?"), _m))
