@@ -1501,6 +1501,8 @@ def to_main(max_n=4, wait=2.0):
             invalidate_display()
             _wait_display(18)
             close_kid_popup()
+            # ⭐ 2026-10-07 修：am start 清栈后 Soul 不在前台（回到桌面）→ 必须 ensure_foreground 拉回
+            ensure_foreground()
         except Exception:
             pass
         time.sleep(1.2)
