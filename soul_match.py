@@ -477,9 +477,12 @@ def to_planet():
         return True
     hit = next(((cx, cy) for t, cx, cy in items if t.strip() == "星球" and cy > 1150), None)
     if not hit:
-        soul.adb("shell", "am", "start", "-n",
-                 "cn.soulapp.android/.component.startup.main.MainActivity")
-        time.sleep(3.5)
+        # ⭐ 2026-10-07 修「RN 搜索页卡死 no_planet」（实测 01:10）：
+        #   旧兜底 `am start`（无 clear-top）清不掉 RN 搜索页 → 连续 no_planet。
+        #   改走 soul.to_main()（BACK 无效会升级：右上「取消」→ clear-top 清栈），
+        #   回主框架后重读屏幕再找「星球」tab。
+        soul.to_main()
+        time.sleep(2.0)
         items = rd.items()
         hit = next(((cx, cy) for t, cx, cy in items if t.strip() == "星球" and cy > 1150), None)
     if not hit:

@@ -1451,6 +1451,13 @@ def to_main(max_n=4, wait=2.0):
       「切换账号」入口在底导航「自己」→ 会话页/搜索页/用户主页**都没有底导航**，
       直接按坐标点会落空 → 「没进到切换账号页（OCR 没看到标题）」→ 切号失败。
       实测 14:28 强制切号就是这样失败的（当时刚被奇遇铃带进会话页）。
+
+    ⭐ 2026-10-07 修「RN 搜索页卡死导航」（实测 01:17 强制切号失败 + 01:10 no_planet）：
+      ghost 补偿/搜索找人会把人留在 RnContainerActivity 的**搜索结果页**——
+      那种页面**左上角没有返回键**（出口在右上「取消」），BACK_XY 空点 4 次纹丝不动。
+      升级策略：一次 BACK 后 activity 没变 = 返回键无效 → ①点右上 OCR 到的
+      「取消/关闭」（cx>600, cy<200）→ ②仍不行就 `--activity-clear-top` 清栈
+      （同 soul_reply._goto_chat_list ② 的姿势：清栈后必刷 display + 关青少年弹窗）。
     """
     for _ in range(max_n):
         a = activity() or ""
@@ -1462,6 +1469,34 @@ def to_main(max_n=4, wait=2.0):
         print(f"  ↩ 回到主框架：当前 {a.split('.')[-1]} → 按返回")
         tap(*BACK_XY)
         time.sleep(wait)
+        a2 = activity() or ""
+        if "MainActivity" in a2:
+            return True
+        if a2 != a:
+            continue                        # 返回有效（退了一层）→ 继续按
+        # 返回键无效（RN 搜索页这类无左上返回的页面）→ 升级
+        hit = None
+        try:
+            hit = next(((cx, cy) for t, cx, cy in _rd_mod().items()
+                        if (t or "").strip() in ("取消", "关闭") and cx > 600 and cy < 200), None)
+        except Exception:
+            hit = None
+        if hit:
+            print("  ↩ 左上返回无效 → 点右上「取消/关闭」")
+            tap(*hit)
+            time.sleep(1.8)
+            continue
+        print("  ↩ 返回/取消都出不去 → 清栈重启主活动（兜底）")
+        try:
+            adb("shell", "am", "start", "-n",
+                "cn.soulapp.android/.component.startup.main.MainActivity",
+                "--activity-clear-top")
+            invalidate_display()
+            _wait_display(18)
+            close_kid_popup()
+        except Exception:
+            pass
+        time.sleep(1.2)
     return "MainActivity" in (activity() or "")
 
 
