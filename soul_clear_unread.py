@@ -84,32 +84,41 @@ def badges(path=SHOT):
 
 # ⭐ 2026-10-07 用户口径：「右手边红色的圆点、里面含有数字」才算未读待回。
 #   纯红点（无数字）= 系统类提醒/官方号推送，不进清扫清单。
-_re_badge_num = re.compile(r"^\d{1,2}\+?$")   # 角标数字：2 / 99+（排除同行时间「00:41」这类带冒号的）
+#   判据见下面 numbered()（**图像判据**，不依赖 OCR —— OCR 读不到角标小数字，已实测）。
 
 
 def numbered(items=None, path=None):
-    """badges() → 只保留「圆点里含数字」的未读角标（结构同 badges()，按 y 升序）。
+    """badges() → 只保留「红圆点内部有**白色数字**」的未读角标（结构同 badges()，按 y 升序）。
 
-    判据：红点簇中心 ±55 逻辑像素内，有 OCR 出的**纯数字**文本（_re_badge_num）。
-      同行右侧的时间戳（00:41）含冒号、日期（9月25日）含汉字，天然被正则排除。
-    ⚠️ OCR 读不出角标小数字时该行会被滤掉 → 宁漏不误（漏了留在未读，下轮再来）。
+    ⭐ 2026-10-07 改判据（**实测教训**）：靠 OCR 读角标里那个 6~10px 的小数字**不可靠** ——
+      同一屏手工单跑能读到「0」，守护里跑却恒读不到，导致「编号红点 0 个 / 红色候补 2 个」
+      → 一个红点都进不去。改为**纯图像判据**（不依赖 OCR）：
+        带数字的角标 = 红底 + **白字** → 红簇**中心**一带必有近白像素；
+        纯红元素（无数字的圆点/图标）中心是纯红 → 没有。
+      `items` 参数仅为兼容旧调用签名，已不再使用。
     """
-    if items is None:
-        try:
-            import soul_read as rd
-            items = rd.items()
-        except Exception:
-            items = []
+    from PIL import Image
+    p = _shot_path(path)
+    try:
+        im = Image.open(p).convert("RGB")
+    except Exception:
+        return []
+    W, H = im.size
+    sx, sy = SCREEN[0] / float(W), SCREEN[1] / float(H)
+    px = im.load()
+    # 只看**中心 ±7 逻辑像素**（≈ 红圆盘内部，避开圆盘外的白色行背景 —— 否则全是误判）
+    rx, ry = max(4, int(round(7 / sx))), max(4, int(round(7 / sy)))
     out = []
-    for z in badges(_shot_path(path)):
-        zx, zy = z["x"], z["y"]
-        for t, cx, cy in (items or []):
-            s = str(t or "").strip()
-            if not _re_badge_num.match(s):
-                continue
-            if abs(cx - zx) <= 55 and abs(cy - zy) <= 55:
-                out.append(z)
-                break
+    for z in badges(p):
+        cx, cy = int(round(z["x"] / sx)), int(round(z["y"] / sy))
+        white = 0
+        for y in range(max(0, cy - ry), min(H, cy + ry + 1)):
+            for x in range(max(0, cx - rx), min(W, cx + rx + 1)):
+                r, g, b = px[x, y]
+                if r > 200 and g > 195 and b > 195:
+                    white += 1
+        if white >= 5:                      # 白字至少 5 个近白像素
+            out.append(z)
     return out
 
 
