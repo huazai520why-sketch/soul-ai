@@ -976,6 +976,15 @@ def gate(raw, incoming, n, my_recent=None):
             dropped.append(["红线闸不可用"]); continue
         if _hh:
             dropped.append(["红线:%s" % _hh]); continue
+        # ⭐ 2026-10-07 主动邀约硬闸（用户铁律「见面必须她主导，绝不自己约」）：
+        #   实测 03:00 本地层给「伴疏影静守山河」生成「要不咱约个时间去钓鱼？」并**成功发出**
+        #   —— 该铁律此前只写在提示词（`soul_rules.FORBID` / `soul_stage`）里，
+        #   而**本地预生成池整条链路不吃提示词** → 直接漏发。这里补成与内容红线同级的代码闸。
+        #   只剔**命中那一句**（同屏其它句仍可用），不整条判废；判据见 `soul_rules._INVITE_RE`
+        #   （只认「约个时间/见个面/出来见」这类明确形态，绝不误杀「约会/节约/见面的事你定」）。
+        _iv = _R.invite_hit(ln)
+        if _iv:
+            dropped.append(["主动邀约:%s" % _iv, ln]); continue
         rich = [b for b in BAN_RICH if b in ln]
         if rich:
             dropped.append(["装富%s" % rich, ln]); continue
