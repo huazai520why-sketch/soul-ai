@@ -439,6 +439,31 @@ def _chat_nav_dot():
         return None
 
 
+# ⭐ 2026-10-07 放行兜底（防匹配被永久饿死）：
+#   红点若**长期消不掉**（官方号/系统卡片类未读，永远没有可回复的消息可清），
+#   匹配前/后检查绝不能无限拦截。与 soul_daemon.DOT_BLOCK_MAX 同款语义：
+#   连续 DOT_ESCAPE 次判"有红点"后放行一次；红点一消失（或判不了）立即清零。
+#   （daemon 层 dot_block_match 已有 3 次放行；这里再叠加 2 次是**有界**的，
+#     不会像无兜底那样把匹配彻底卡死。）
+DOT_ESCAPE = 2
+_nav_dot_streak = [0]
+
+
+def _nav_dot_blocks():
+    """该红点值得中断本次匹配吗？True=中断，False=放行（判不了 / 已达放行上限）。"""
+    s = _chat_nav_dot()
+    if s is not True:
+        _nav_dot_streak[0] = 0
+        return False
+    _nav_dot_streak[0] += 1
+    if _nav_dot_streak[0] > DOT_ESCAPE:
+        print("  🔴 聊天导航红点连续 %d 次未消 → 放行匹配（防消不掉的红点饿死匹配）"
+              % DOT_ESCAPE)
+        _nav_dot_streak[0] = 0
+        return False
+    return True
+
+
 # ==================== 导航 ====================
 def to_planet():
     """回到星球页（会话页→返回→星球tab）"""
@@ -584,8 +609,8 @@ def match_once(opening=None, dry=False, wait_match=30):
 
     # ⭐ 2026-10-07 用户口径：「匹配前检测一次新消息」—— 已进入星球页、
     #   点匹配动作之前，截图看聊天导航有没有红点：有 = 有新消息 → 消息优先，
-    #   立刻中断去回消息（本次不匹配）。None=判不了 → 不拦（绝不把判不了当有）。
-    if not _FORCE and _chat_nav_dot() is True:
+    #   立刻中断去回消息（本次不匹配）。判不了 / 连续未见效 → 放行（见 _nav_dot_blocks）。
+    if not _FORCE and _nav_dot_blocks():
         print("  🔴 点匹配前：聊天导航有红点 → 有新消息，先去回消息（本次不匹配）")
         return (None, "interrupted_by_msg")
 
@@ -691,7 +716,7 @@ def match_once(opening=None, dry=False, wait_match=30):
     #   （本次已发出、名字照计，上层中断本批立刻去回消息）。
     if not _FORCE:
         try:
-            if to_planet() and _chat_nav_dot() is True:
+            if to_planet() and _nav_dot_blocks():
                 print("  🔴 匹配后复查：聊天导航有红点 → 有新消息，先去回消息")
                 return (name, "sent_pending")
         except Exception as e:
