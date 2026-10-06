@@ -2196,6 +2196,15 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
         except Exception as e:
             log("  !! _dot_sweep numbered() 失败: %r" % (e,))
             bs = []
+        # ⭐ 2026-10-07 可观测性：上一版出现过「整轮一个新日志都没有」（红点没找到却
+        #   也无从判断为什么）→ 每屏都记录「编号红点/红色候补/当前页面」，排查不再靠猜。
+        try:
+            _all = CU.badges(CU._shot_path())
+        except Exception:
+            _all = []
+        log("  🔎 红点清扫 屏%d：编号红点 %d 个 / 红色候补 %d 个 / 页面=%s"
+            % (page + 1, len(bs), len(_all),
+               (soul.activity() or "?").split('.')[-1] or "?"))
         if not bs:
             try:
                 soul.swipe_up()
