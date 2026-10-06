@@ -2038,11 +2038,14 @@ def _resolve_row(items, y, pend, st):
     return (p[1], p[3], p[5])
 
 
-def _dot_sweep(st, max_rows=3, max_pages=3):
-    """红点「进入式判定」清扫（2026-10-06 用户口径 + M1 前置守卫）。
+def _dot_sweep(st, max_rows=3, max_pages=5):
+    """红点「进入式判定」清扫（2026-10-06 用户口径 + M1 前置守卫 + 10-07 带数字口径）。
 
       原话：「点进去如果是正常的聊天框，那就证明可以对话，正常对话就行；
              如果不是那么返回退出。」
+      2026-10-07 口径：「分析右手边是否有红色的圆点、里面含有数字；有就点进去看
+             是否是对话页，不是就返回、是就正常对话；当前屏没有就滑动继续，滑 5 屏
+             都没有就放弃。」→ 只认**带数字**的未读角标（`CU.numbered()`），翻屏上限 5。
 
     🔴 三个历史坑（保留本段，防止有人改回去）：
       ① **绝不能"只进入就返回"**：tap 进会话 = 把她的消息标成**已读**。旧
@@ -2055,7 +2058,7 @@ def _dot_sweep(st, max_rows=3, max_pages=3):
       ③ **后置兜底**：万一 tap 后身份/回复仍失败（前置守卫漏网），**绝不静默当已清** ——
          记 warning（含会话页 OCR 原文便于取证）+ 返回 `"unresolved"`，交调用方判"未清"。
 
-    限额 max_rows=3 行 / max_pages=3 屏（防系统卡片连点把一轮拖死）。
+    限额 max_rows=3 行 / max_pages=5 屏（防系统卡片连点把一轮拖死；5 屏=用户 10-07 口径）。
     返回：`False`=红点已清 ／ `True`/`None`=仍在/判不了 ／ `"unresolved"`=进了会话却没回成
           （**调用方不得当成已清**）。
     """
@@ -2121,10 +2124,17 @@ def _dot_sweep(st, max_rows=3, max_pages=3):
             soul.screenshot()
         except Exception:
             pass
+        # ⭐ 2026-10-07 只认**带数字**的红点（用户口径：圆点里含数字）。
+        #   把当前屏 OCR items 传给 CU.numbered()，避免它内部再截图/再 OCR。
         try:
-            bs = CU.badges()
+            _items = rd.items()
         except Exception as e:
-            log("  !! _dot_sweep badges() 失败: %r" % (e,))
+            log("  !! _dot_sweep 读屏失败: %r" % (e,))
+            _items = []
+        try:
+            bs = CU.numbered(_items)
+        except Exception as e:
+            log("  !! _dot_sweep numbered() 失败: %r" % (e,))
             bs = []
         if not bs:
             try:

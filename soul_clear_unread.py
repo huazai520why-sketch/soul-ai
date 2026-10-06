@@ -20,7 +20,7 @@ v2 为什么重写（v1 用昵称 OCR 找人 → 5/5 全失败）：
   python soul_clear_unread.py            # 回顶 → 逐屏找红点 → 逐个进入清掉
   python soul_clear_unread.py --dry      # 只列红点位置，不点击
 """
-import sys, io, os, time, sqlite3
+import sys, io, os, re, time, sqlite3
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE)
@@ -79,6 +79,37 @@ def badges(path=SHOT):
     out = [{"x": c["xp"] * sx, "y": c["yp"] * sy, "n": c["n"]}
            for c in clusters if c["n"] >= 25]
     out.sort(key=lambda z: z["y"])
+    return out
+
+
+# ⭐ 2026-10-07 用户口径：「右手边红色的圆点、里面含有数字」才算未读待回。
+#   纯红点（无数字）= 系统类提醒/官方号推送，不进清扫清单。
+_re_badge_num = re.compile(r"^\d{1,2}\+?$")   # 角标数字：2 / 99+（排除同行时间「00:41」这类带冒号的）
+
+
+def numbered(items=None, path=None):
+    """badges() → 只保留「圆点里含数字」的未读角标（结构同 badges()，按 y 升序）。
+
+    判据：红点簇中心 ±55 逻辑像素内，有 OCR 出的**纯数字**文本（_re_badge_num）。
+      同行右侧的时间戳（00:41）含冒号、日期（9月25日）含汉字，天然被正则排除。
+    ⚠️ OCR 读不出角标小数字时该行会被滤掉 → 宁漏不误（漏了留在未读，下轮再来）。
+    """
+    if items is None:
+        try:
+            import soul_read as rd
+            items = rd.items()
+        except Exception:
+            items = []
+    out = []
+    for z in badges(_shot_path(path)):
+        zx, zy = z["x"], z["y"]
+        for t, cx, cy in (items or []):
+            s = str(t or "").strip()
+            if not _re_badge_num.match(s):
+                continue
+            if abs(cx - zx) <= 55 and abs(cy - zy) <= 55:
+                out.append(z)
+                break
     return out
 
 
