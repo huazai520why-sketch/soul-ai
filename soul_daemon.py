@@ -2007,10 +2007,63 @@ def _dot_row_name(items, y):
     return [s for _, s in out]
 
 
-def _resolve_row(items, y, pend, st):
-    """前置守卫：把「红点行 y」解析成可回复的待回条目 `(name, her_text, sid)`。
+def _row_sid(items, y):
+    """红点行 y → (name, sid)：用 OCR 昵称去累积库 nick 表**严格唯一**匹配。
 
-    只在**唯一命中**时才认（多个候选/命中多人都判失败）——宁可不回，绝不发错人。"""
+    ⭐ 2026-10-07 新增（修「红点检出了却全被跳过」）：
+      `pending()` 只认「末条**真话**是她发的」，而聊天列表的红点把**系统卡片**
+      （msgType 27/35：打招呼卡片、平台通知）也算未读 —— 这类行**永远不在 pending 里**，
+      旧守卫于是永久跳过 → 红点永远清不掉（实测 鱼🐟/不管不顾 两行各有红点「1」，
+      末条全是 mt=35 系统卡片）。这里按**昵称**直接解析出会话，给出进入的目标。
+
+    🔴 严格匹配（宁可不进，绝不进错人）：归一化后**精确相等**才算；退一步只接受
+       **唯一**的双向子串命中；多个命中 / 一个都没 → None（调用方绝不 tap）。
+    """
+    cands = _dot_row_name(items, y)
+    if not cands:
+        return None
+    try:
+        c = sqlite3.connect(_memdb())
+        pairs = [(str(n or "").strip(), str(u or "").strip())
+                 for u, n in c.execute("SELECT uid, name FROM nick").fetchall()]
+        c.close()
+    except Exception as e:
+        log("  !! _row_sid 读 nick 表失败: %r" % (e,))
+        return None
+    for cand in cands:
+        if not cand or not _reachable(cand):
+            continue
+        cn = _norm_nick(cand)
+        if not cn:
+            continue
+        hit = [u for n, u in pairs if n and _norm_nick(n) == cn]
+        if not hit:
+            hit = [u for n, u in pairs
+                   if n and (_norm_nick(n).startswith(cn) or cn.startswith(_norm_nick(n)))]
+        if len(hit) != 1:
+            continue
+        sid = _sid_of(hit[0])
+        if sid:
+            return (cand, sid)
+    return None
+
+
+def _resolve_row(items, y, pend, st):
+    """前置守卫：把「红点行 y」解析成 `(name, her_text_or_None, sid)`。
+
+    · her_text 有值 → 这一行**有真话待回** → tap 后必须**正常对话回复**；
+    · her_text 为 None → 这一行**没有可回的真话**（末条是系统卡片/非文本，
+      或末条真话本就是我自己发的）→ tap 只**清红点**，进入后立即返回（不回复）。
+
+    ⭐ 2026-10-07 用户口径：「点进去看是否是对话页，不是就返回，是就正常对话」。
+      为什么 her_text=None 时「进入+返回」是安全的：`pending()` 是「末条真话是她发的」
+      的**权威口径**，不在 pending 里 ⇒ 该会话**没有**她的未读真话 ⇒ 进入不会把任何
+      「真消息」标成已读 ⇒ 不触碰「绝不标已读却不回」红线。
+
+    两路解析（各自要求**唯一命中**）：
+      ① pending 快照（最快最准，含可达/假末条/可发/冷却全套过滤）；
+      ② 昵称直接匹配会话（_row_sid）—— 覆盖①覆盖不到的系统卡片行。
+    """
     cands = _dot_row_name(items, y)
     if not cands:
         return None
@@ -2032,10 +2085,17 @@ def _resolve_row(items, y, pend, st):
         except Exception:
             pass
         hit.append(p)
-    if len(hit) != 1:
-        return None
-    p = hit[0]
-    return (p[1], p[3], p[5])
+    if len(hit) > 1:
+        return None                     # 命中多人 → 判失败（宁可不回，绝不发错人）
+    if len(hit) == 1:
+        p = hit[0]
+        return (p[1], p[3], p[5])
+    # ② 不在 pending（末条是系统卡片）→ 仍要清红点：按昵称解析会话，进入后只清不回复
+    got = _row_sid(items, y)
+    if not got:
+        return None                     # 身份解析不出 → 绝不 tap
+    rname, rsid = got
+    return (rname, None, rsid)
 
 
 def _dot_sweep(st, max_rows=3, max_pages=5):
@@ -2164,8 +2224,8 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                 _items = []
             _pre = _resolve_row(_items, y, _pend_cache, st)
             if not _pre:
-                log("  ⏭ 红点行 y=%d 解析不出可回复的待回身份 → 跳过（不 tap、留在未读，"
-                    "交下一轮 pending 回复流程）" % y)
+                log("  ⏭ 红点行 y=%d 解析不出**会话身份**（pending 无、昵称也唯一匹配不上）"
+                    "→ 跳过、绝不 tap（防进错人）" % y)
                 continue
             _pname, _ptext, _psid = _pre
             rows += 1
@@ -2190,6 +2250,22 @@ def _dot_sweep(st, max_rows=3, max_pages=5):
                 _main = bool(soul.on_main())
             except Exception:
                 _main = True
+            # ⭐ 2026-10-07：本行**末条非真话**（系统卡片/平台通知）→ 进入只为清红点，
+            #   看清是不是会话页后立即返回，**绝不回复**（无可回内容，也不涉标已读真消息）。
+            if _ptext is None:
+                if (not _main) and _m in ("text", "voice", "rec"):
+                    log("  🧹 红点进「%s」= 会话页但末条非真话（系统卡片/平台通知）"
+                        "→ 已清红点，返回（不回复）" % _pname)
+                else:
+                    log("  ↩ 红点进 y=%d 不是正常聊天框（mode=%s, on_main=%s）→ 记未处理"
+                        % (y, _m, _main))
+                    _unresolved = True
+                try:
+                    _backs()
+                except Exception as e:
+                    log("  !! _dot_sweep _backs 异常: %r" % (e,))
+                    _unresolved = True
+                break
             if (not _main) and _m in ("text", "voice", "rec"):
                 # e. 正常聊天框 → 用**前置守卫已确认**的身份真回复（绝不只进入就返回）
                 name, sid6 = _pname, _psid
