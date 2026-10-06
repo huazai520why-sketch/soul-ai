@@ -1,9 +1,0 @@
-[32m[INFO] 2026-10-04 23:12:24,680 [RapidOCR] base.py:23: Using engine_name: onnxruntime[0m
-[32m[INFO] 2026-10-04 23:12:24,864 [RapidOCR] download_file.py:60: File exists and is valid: C:\Users\JIAN\.workbuddy\binaries\python\envs\soulocr\Lib\site-packages\rapidocr\models\ch_PP-OCRv5_det_mobile.onnx[0m
-[32m[INFO] 2026-10-04 23:12:24,864 [RapidOCR] main.py:63: Using C:\Users\JIAN\.workbuddy\binaries\python\envs\soulocr\Lib\site-packages\rapidocr\models\ch_PP-OCRv5_det_mobile.onnx[0m
-[32m[INFO] 2026-10-04 23:12:25,046 [RapidOCR] base.py:23: Using engine_name: onnxruntime[0m
-[32m[INFO] 2026-10-04 23:12:25,050 [RapidOCR] download_file.py:60: File exists and is valid: C:\Users\JIAN\.workbuddy\binaries\python\envs\soulocr\Lib\site-packages\rapidocr\models\ch_ppocr_mobile_v2.0_cls_mobile.onnx[0m
-[32m[INFO] 2026-10-04 23:12:25,051 [RapidOCR] main.py:63: Using C:\Users\JIAN\.workbuddy\binaries\python\envs\soulocr\Lib\site-packages\rapidocr\models\ch_ppocr_mobile_v2.0_cls_mobile.onnx[0m
-[32m[INFO] 2026-10-04 23:12:25,224 [RapidOCR] base.py:23: Using engine_name: onnxruntime[0m
-[32m[INFO] 2026-10-04 23:12:25,300 [RapidOCR] download_file.py:60: File exists and is valid: C:\Users\JIAN\.workbuddy\binaries\python\envs\soulocr\Lib\site-packages\rapidocr\models\ch_PP-OCRv5_rec_mobile.onnx[0m
-[32m[INFO] 2026-10-04 23:12:25,300 [RapidOCR] main.py:63: Using C:\Users\JIAN\.workbuddy\binaries\python\envs\soulocr\Lib\site-packages\rapidocr\models\ch_PP-OCRv5_rec_mobile.onnx[0m

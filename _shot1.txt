@@ -1,2 +1,0 @@
-﻿窗口=render_wnd(cache) hwnd=0x20318 → OK 540x960 PrintWindow=1
-输出: E:\soul\v1live.png (109236 字节)
