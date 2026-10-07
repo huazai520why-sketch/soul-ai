@@ -50,6 +50,7 @@ agent_models.json
 # 只忽略工单与去重状态
 /pipeline/orders/
 /pipeline/state.json
+/pipeline/pending.md
 
 # ---- 调试产物目录（2026-10-06 仓库卫生）----
 /_probe/

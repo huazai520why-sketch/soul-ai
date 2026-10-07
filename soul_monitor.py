@@ -32,6 +32,7 @@ PIPE = os.path.join(BASE, "pipeline")
 CHECKS_F = os.path.join(PIPE, "checks.json")
 ORDERS_D = os.path.join(PIPE, "orders")
 STATE_F = os.path.join(PIPE, "state.json")
+PENDING_F = os.path.join(PIPE, "pending.md")   # ⭐ 给用户看的「待处理」清单（人机交接面）
 DAEMON_LOG = os.path.join(BASE, "_uimap", "daemon", "daemon.0.log")
 CODE_WATCH_LOG = os.path.join(BASE, "logs", "code_watch.log")
 LOCK_F = os.path.join(BASE, ".soul_auto.lock")
@@ -115,7 +116,8 @@ def chk_daemon_errors():
 
 def chk_restart_pending():
     """⭐ 今晚的坑：代码改了但守护没重启 → 改动不生效。
-    判据：最后一次守护启动时间 < 最后一次 git 提交时间。"""
+    ⚠️ 判据必须**只算『关键生产脚本』的提交** —— 首版只看 "最后一次提交"，
+       结果我提交了两个 .md 文档也被报「改了没重启」，是误报（实测踩过）。"""
     lines = _tail(DAEMON_LOG, 800)
     last_boot = None
     for ln in reversed(lines):
@@ -128,16 +130,21 @@ def chk_restart_pending():
                 break
     if not last_boot:
         return True, "读不到守护启动时间（跳过）"
-    out = _sh(["git", "-C", BASE, "log", "-1", "--format=%ct"]).strip()
+    # 只看**关键生产脚本**的最后提交时间
+    crit = ["soul_daemon.py", "soul_reply.py", "soul_send.py", "soul.py", "soul_im.py",
+            "soul_fast.py", "soul_match.py", "soul_acct.py", "soul_rules.py", "soul_db.py",
+            "soul_brain.py", "soul_llm.py", "soul_stage.py", "soul_clear_unread.py",
+            "_daemon_guard.py", "soul_global_lock.py", "soul_read.py"]
+    out = _sh(["git", "-C", BASE, "log", "-1", "--format=%ct", "--"] + crit).strip()
     try:
         last_commit = float(re.search(r"\d{9,}", out).group(0))
     except Exception:
-        return True, "读不到最后提交时间（跳过）"
+        return True, "读不到关键脚本的最后提交时间（跳过）"
     if last_commit > last_boot + 60:
         dt = (last_commit - last_boot) / 60
-        return False, ("**改了没重启**：最后提交比守护启动晚 %.0f 分钟 → "
+        return False, ("**改了没重启**：关键脚本的提交比守护启动晚 %.0f 分钟 → "
                        "新代码未加载（处置：release 锁 → 重启守护）" % dt)
-    return True, "守护启动晚于最后提交（新代码已加载）"
+    return True, "关键脚本最近提交早于守护启动（新代码已加载）"
 
 
 def chk_nick_empty_name():
@@ -200,13 +207,13 @@ def chk_high_risk_change():
             seen.append(fm.group(1))
     if not seen:
         return True, "24h 内无高危变更"
-    out = _sh(["git", "-C", BASE, "status", "--porcelain", "--"] + sorted(set(seen)))
-    dirty = []
-    for l in out.splitlines():
-        if l.strip():
-            dirty.append(l.split()[-1])
+    # ⚠️ 必须用 `git diff --name-only`（**内容差异**），不能用 `git status --porcelain`
+    #    —— 后者会报"行尾符幻影"：文件 mtime 变了但内容没变时它也标 M（实测 soul_daemon.py
+    #    被误报脏改动 196 分钟，而 `git diff` 其实是空的）。
+    out = _sh(["git", "-C", BASE, "diff", "--name-only", "--"] + sorted(set(seen)))
+    dirty = [l.strip() for l in out.splitlines() if l.strip()]
     if not dirty:
-        return True, "24h 内 %d 个高危文件变更，均已提交" % len(set(seen))
+        return True, "24h 内 %d 个高危文件变更，内容均已提交" % len(set(seen))
     # 脏改动的持续时长（首次发现时间记在 state.first_dirty）
     st = _load_state()
     fd = st.setdefault("first_dirty", {})
@@ -328,6 +335,36 @@ def open_order(cid, title, detail, dry=False):
     return fn
 
 
+def write_pending(problems, opened):
+    """⭐ 人机交接面：把「当前待处理」写成一个固定文件，用户回来一眼看到。
+    为什么要它：agentM 是自动的，但工单躺在 pipeline/orders/ 里**没人知道** ——
+    这一步把「自动感知」的结果推到用户眼前，用户回来只需说一句「处理最新工单」，
+    不必自己想该干什么、该切哪个模型。"""
+    try:
+        os.makedirs(PIPE, exist_ok=True)
+        L = []
+        L.append("# 待处理工单\n")
+        L.append("> 由 agentM 自动巡检写入 · 更新时间 %s\n" % time.strftime("%Y-%m-%d %H:%M:%S"))
+        if not problems:
+            L.append("\n✅ **当前无待处理问题** —— 全部检查通过。\n")
+        else:
+            L.append("\n发现 **%d** 个问题：\n" % len(problems))
+            L.append("| # | 检查项 | 现象 |")
+            L.append("|---|---|---|")
+            for i, (cid, desc, detail) in enumerate(problems, 1):
+                L.append("| %d | %s | %s |" % (i, desc, str(detail).replace("|", "/")[:150]))
+            if opened:
+                L.append("\n新开工单：")
+                for desc, fn in opened:
+                    L.append("- `%s`" % fn)
+            L.append("\n## 👉 怎么处理\n")
+            L.append("回对话里说一句：**「处理最新工单」**")
+            L.append("（我会读工单内容、报该切哪个模型；你不用自己想切哪个）\n")
+        io.open(PENDING_F, "w", encoding="utf-8").write("\n".join(L) + "\n")
+    except Exception as e:
+        print("  !! 写 pending.md 失败: %r" % (e,))
+
+
 def one_round(dry=False, verbose=True):
     problems = []
     if verbose:
@@ -361,6 +398,7 @@ def one_round(dry=False, verbose=True):
         fn = open_order(cid, desc, detail, dry=dry)
         if fn:
             opened.append((desc, fn))
+    write_pending(problems, opened)
     if verbose:
         print("-" * 64)
         if problems:
