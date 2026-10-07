@@ -1210,7 +1210,7 @@ def _shot_ok():
 
 def _restart_vm():
     """重启 MuMu 实例（shutdown → launch）。必须在 Session 1 执行才有效。"""
-    MGR = r"D:\MuMuPlayer\nx_main\MuMuManager.exe"
+    MGR = os.path.join(soul.MUMU_ROOT, "nx_main", "MuMuManager.exe")
     NW = 0x08000000
     for args in ([MGR, "control", "-v", VM, "shutdown"],):
         try:

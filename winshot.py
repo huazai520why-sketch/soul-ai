@@ -15,6 +15,21 @@ import ctypes, ctypes.wintypes as wt, struct, zlib, sys, os, subprocess, re, tim
 # ⭐ 无黑窗（2026-09-30）：mumu-cli.exe / tasklist 是控制台程序，不带此标志每次调用都闪黑窗。
 _NW = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
+# ⭐ 2026-10-07：MuMu 安装目录迁移（D:\MuMuPlayer → Program Files\Netease\MuMu），
+#   截图链路查 render_wnd 依赖 mumu-cli，写死旧路径会致截图全失败。候选自动发现。
+def _mumu_cli():
+    env = os.environ.get("SOUL_MUMU_ROOT")
+    if env and os.path.isfile(os.path.join(env, "nx_main", "mumu-cli.exe")):
+        return os.path.join(env, "nx_main", "mumu-cli.exe")
+    for cand in (r"D:\Program Files\Netease\MuMu", r"D:\MuMuPlayer"):
+        p = os.path.join(cand, "nx_main", "mumu-cli.exe")
+        if os.path.isfile(p):
+            return p
+    return r"D:\Program Files\Netease\MuMu\nx_main\mumu-cli.exe"
+
+
+_MUMU_CLI = _mumu_cli()
+
 user32 = ctypes.windll.user32
 gdi32 = ctypes.windll.gdi32
 user32.SetProcessDPIAware()
@@ -127,7 +142,7 @@ def _hwnd_cached():
 
 def _cur_render_wnd():
     """问 mumu-cli 当前实例的 render_wnd 实际是多少（拿不到就 None，绝不抛）。"""
-    cli = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
+    cli = _MUMU_CLI
     try:
         out = subprocess.run([cli, "info", "-v", _vm_index()], capture_output=True,
                              timeout=10, creationflags=_NW).stdout.decode("utf-8", "ignore")
@@ -153,7 +168,7 @@ def find_mumu_hwnd():
     h = _hwnd_cached()
     if h:
         return h, "render_wnd(cache)"
-    cli = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
+    cli = _MUMU_CLI
     try:
         out = subprocess.run([cli, "info", "-v", _vm_index()], capture_output=True,
                              timeout=25, creationflags=_NW).stdout.decode("utf-8", "ignore")

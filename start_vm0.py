@@ -7,8 +7,8 @@
 """
 import subprocess, sys, time, json, os, re, ctypes
 
-CLI = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
-ADB = r"D:\MuMuPlayer\nx_device\15.0\shell\adb.exe"
+CLI = r"D:\Program Files\Netease\MuMu\nx_main\mumu-cli.exe"
+ADB = r"D:\Program Files\Netease\MuMu\nx_device\15.0\shell\adb.exe"
 PKG = "cn.soulapp.android"
 MAIN = "cn.soulapp.android/.component.startup.main.MainActivity"
 ADB_ADDR = "127.0.0.1:16384"

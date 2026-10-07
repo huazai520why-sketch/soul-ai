@@ -25,7 +25,7 @@
 """
 import subprocess, sys, os, json, time
 
-MUMU_CLI = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
+MUMU_CLI = r"D:\Program Files\Netease\MuMu\nx_main\mumu-cli.exe"
 VMINDEX = os.environ.get("SOUL_VMINDEX", "0")
 DBDIR = "/data/data/cn.soulapp.android/databases"
 SESS = "SmNjOUhiUUhZa1RWVlgvZUh1NEExdz09"

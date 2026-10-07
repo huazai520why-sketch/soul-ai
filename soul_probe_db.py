@@ -27,7 +27,7 @@ except Exception:
 
 DIR = r"E:\soul"
 OUT_WIN = os.path.join(DIR, "_probe")
-SHARED_WIN = r"D:\MuMuPlayer\vms\MuMuPlayer-15.0-0\private_shared\probe"
+SHARED_WIN = os.path.join(soul.MUMU_ROOT, "vms", "MuMuPlayer-15.0-0", "private_shared", "probe")
 SHARED_AND = "/mnt/shared/private_shared/probe"
 DBDIR = "/data/data/cn.soulapp.android/databases"
 

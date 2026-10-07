@@ -2,8 +2,8 @@
 """恢复正常：拉起 Soul 并截图确认"""
 import subprocess, io, os, time
 
-MUMU_CLI = r'D:\MuMuPlayer\nx_main\mumu-cli.exe'
-ADB = r'D:\MuMuPlayer\nx_device\15.0\shell\adb.exe'
+MUMU_CLI = r'D:\Program Files\Netease\MuMu\nx_main\mumu-cli.exe'
+ADB = r'D:\Program Files\Netease\MuMu\nx_device\15.0\shell\adb.exe'
 SHOTS = r'C:\Users\JIAN\Documents\MuMu共享文件夹\Screenshots'
 LOG = io.open(r'E:\soul\_restore.txt', 'w', encoding='utf-8')
 

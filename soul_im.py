@@ -19,7 +19,7 @@ from datetime import datetime
 #    （MuMu 不向 Windows 暴露 adb 端口，16384/5555 均拒绝连接；
 #      实测关防火墙、试各端口、试 usingNormalADBPort 全部无效）
 #    改走 mumu-cli 的 `sh` 免端口通道；文件传输改用共享目录：
-#      Windows  D:\MuMuPlayer\vms\MuMuPlayer-15.0-0\private_shared
+#      Windows  <MuMu根>\vms\MuMuPlayer-15.0-0\private_shared（根目录见 soul.MUMU_ROOT，2026-10-07 起为 D:\Program Files\Netease\MuMu）
 #      Android  /mnt/shared/private_shared
 import soul as _soul
 

@@ -22,8 +22,22 @@
 """
 import subprocess, sys, os, re, time, shutil, sqlite3
 
-# ---- MuMu CLI 定位（禁止硬编码版本号路径；这里路径是安装目录，稳定）----
-MUMU_CLI = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
+# ---- MuMu CLI 定位 ----
+# ⭐ 2026-10-07：MuMu 更新器把安装目录从 D:\MuMuPlayer 迁到
+#   "D:\Program Files\Netease\MuMu"，写死旧路径致守护链全瞎、空转约 4.5h。
+#   改为自动发现：环境变量 SOUL_MUMU_ROOT > 新路径 > 旧路径(含 junction 兜底)。
+def _mumu_root():
+    env = os.environ.get("SOUL_MUMU_ROOT")
+    if env and os.path.isfile(os.path.join(env, "nx_main", "mumu-cli.exe")):
+        return env
+    for cand in (r"D:\Program Files\Netease\MuMu", r"D:\MuMuPlayer"):
+        if os.path.isfile(os.path.join(cand, "nx_main", "mumu-cli.exe")):
+            return cand
+    return r"D:\Program Files\Netease\MuMu"   # 都没命中也回退新路径（报错指向现状）
+
+
+MUMU_ROOT = _mumu_root()
+MUMU_CLI = os.path.join(MUMU_ROOT, "nx_main", "mumu-cli.exe")
 VMINDEX = os.environ.get("SOUL_VMINDEX", "0")
 
 # ---- 多实例隔离（2026-09-30 双实例）：路径/状态文件一律按实例分开 ----
@@ -42,7 +56,7 @@ VMI = _vm_index()  # 归一化实例号：非数字/负数一律回退 0（fail-
 
 # 共享目录（Windows 侧）—— 与模拟器内 /mnt/shared/private_shared 互通
 # ⚠️ 2026-09-30 双实例：目录名带实例号。实例0 = MuMuPlayer-15.0-0（与改造前逐字符相同）
-SHARED_WIN = rf"D:\MuMuPlayer\vms\MuMuPlayer-15.0-{VMI}\private_shared"
+SHARED_WIN = os.path.join(MUMU_ROOT, "vms", f"MuMuPlayer-15.0-{VMI}", "private_shared")
 SHARED_AND = "/mnt/shared/private_shared"
 
 BASE = os.path.dirname(os.path.abspath(__file__))
@@ -219,8 +233,8 @@ _ADB_DISP_TTL = 30.0
 def _find_adb():
     global _ADB_EXE
     if _ADB_EXE is None:
-        for cand in (r"D:\MuMuPlayer\nx_main\adb.exe",
-                     r"D:\MuMuPlayer\nx_device\15.0\shell\adb.exe"):
+        for cand in (os.path.join(MUMU_ROOT, "nx_main", "adb.exe"),
+                     os.path.join(MUMU_ROOT, "nx_device", "15.0", "shell", "adb.exe")):
             if os.path.exists(cand):
                 _ADB_EXE = cand
                 break

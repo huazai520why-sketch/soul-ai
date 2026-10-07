@@ -43,7 +43,7 @@ import soul_im as I
 
 # ⚠️ 2026-09-28 迁移 MuMu：雷电已卸载，ldconsole 不复存在。
 #    改用 mumu-cli 拉起/查询模拟器（免端口，不依赖 adb）。
-MUMU_CLI = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
+MUMU_CLI = soul.MUMU_CLI   # ⭐ 2026-10-07：单一来源（soul 自动发现安装目录），勿再写死
 VMINDEX = "0"
 
 

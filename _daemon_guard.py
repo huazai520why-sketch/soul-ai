@@ -40,8 +40,22 @@ DETACHED = 0x00000008
 NO_WINDOW = 0x08000000
 
 # ── MuMu 侧（2026-10-04 新增：guard 负责模拟器生命周期）────────────────────
-CLI = r"D:\MuMuPlayer\nx_main\mumu-cli.exe"
-NXMAIN = r"D:\MuMuPlayer\nx_main\MuMuNxMain.exe"
+# ⭐ 2026-10-07：安装目录迁移（D:\MuMuPlayer → D:\Program Files\Netease\MuMu），
+#   写死旧路径致 guard 永远"拉起实例超时"。guard 是独立引导进程（不能 import soul），
+#   自带候选发现，防更新器再次搬目录。
+def _mumu_root():
+    env = os.environ.get("SOUL_MUMU_ROOT")
+    if env and os.path.isfile(os.path.join(env, "nx_main", "mumu-cli.exe")):
+        return env
+    for cand in (r"D:\Program Files\Netease\MuMu", r"D:\MuMuPlayer"):
+        if os.path.isfile(os.path.join(cand, "nx_main", "mumu-cli.exe")):
+            return cand
+    return r"D:\Program Files\Netease\MuMu"
+
+
+_MUMU_ROOT = _mumu_root()
+CLI = os.path.join(_MUMU_ROOT, "nx_main", "mumu-cli.exe")
+NXMAIN = os.path.join(_MUMU_ROOT, "nx_main", "MuMuNxMain.exe")
 
 # ⛔ 2026-10-05：昼夜换号（SLOT_*）已删除 —— 单实例常驻，模拟器不再按时段开关机。
 
