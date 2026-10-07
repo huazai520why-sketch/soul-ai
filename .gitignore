@@ -41,6 +41,15 @@ newhost_secrets*
 remote_hub_secrets*
 *_creds.txt
 *_credentials*
+# 2026-10-07：模型路由表（角色→厂商/模型；将来可能带厂商 key，一律不入库）
+agent_models.json
+.agent_keys*
+
+# ---- agentM 巡检的运行时产物（2026-10-07）----
+# 注意：pipeline/checks.json **要入库**（它是 agentK 回流出来的规则库，属知识资产）
+# 只忽略工单与去重状态
+/pipeline/orders/
+/pipeline/state.json
 
 # ---- 调试产物目录（2026-10-06 仓库卫生）----
 /_probe/

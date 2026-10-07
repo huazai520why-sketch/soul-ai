@@ -1,0 +1,89 @@
+{
+  "_说明": "agentK(⑤记忆) → agentM(①感知) 的接线文件。agentK 每轮回流，把『能代码化的规则』追加到 checks 里；agentM 每轮巡检读它执行。没有这个文件，回流只是笔记本，不成闭环。",
+  "_字段": {
+    "id": "唯一标识（工单去重用它）",
+    "desc": "人话描述这条规则在防什么",
+    "type": "grep —— 在 files 里找/找不到 pattern",
+    "files": "相对 E:\\soul 的 glob 列表",
+    "pattern": "正则",
+    "expect": "present = 必须存在（防被删）；absent = 必须不存在（防旧错法回潮）",
+    "src": "规则来源（哪次回流 / 哪个 commit 引入的），便于追溯",
+    "enabled": "false = 暂停该检查"
+  },
+  "_新增规则的两种方式": [
+    "简单规则（文本/模式）：直接在这里加一条 grep 项，不用改代码",
+    "复杂规则（要查库/算数）：在 soul_monitor.py 的 BASE_CHECKS 里加一个检查函数"
+  ],
+  "checks": [
+    {
+      "id": "nick-empty-name-guard",
+      "desc": "_row_sid 必须过滤『归一化后为空』的名字（空串是任意串前缀 → 假命中 → 身份解析全线失败）",
+      "type": "grep",
+      "files": ["soul_daemon.py"],
+      "pattern": "if\\s+n\\s+and\\s+nn\\s*:",
+      "expect": "present",
+      "src": "reflow:2026-10-07 acc9231（当晚真根因，第10个commit才找到）",
+      "enabled": true
+    },
+    {
+      "id": "no-ocr-badge-number",
+      "desc": "红点『带数字』判据必须用纯图像（红底白字），**不许回退到 OCR 纯数字**（RapidOCR 读不出 6~10px 角标 → 判据恒为空、吞掉全部红点）",
+      "type": "grep",
+      "files": ["soul_clear_unread.py"],
+      "pattern": "_re_badge_num|^\\s*_re_badge_\\w+\\s*=",
+      "expect": "absent",
+      "src": "reflow:2026-10-07 497b48a（旧判据已废；此规则防它回潮）",
+      "enabled": true
+    },
+    {
+      "id": "conv-page-by-activity",
+      "desc": "会话页判据必须包含 activity 含 Conversation（新版会话页占位符『文明聊天，友善交友~』不含发送/录音关键词）",
+      "type": "grep",
+      "files": ["soul_daemon.py"],
+      "pattern": "\"Conversation\"\\s+in\\s+_a",
+      "expect": "present",
+      "src": "reflow:2026-10-07 243e879",
+      "enabled": true
+    },
+    {
+      "id": "dot-tap-x420",
+      "desc": "红点清扫落点必须是行正文区 x=420（点头像区 x=180 会跳进 MPSecondListActivity）",
+      "type": "grep",
+      "files": ["soul_daemon.py"],
+      "pattern": "soul\\.tap\\(420,",
+      "expect": "present",
+      "src": "reflow:2026-10-07 345e3b6",
+      "enabled": true
+    },
+    {
+      "id": "to-planet-clear-kid-popup",
+      "desc": "to_planet 找星球 tab 前必须先清未成年弹窗（弹窗盖住底导航 → 连续 no_planet）",
+      "type": "grep",
+      "files": ["soul_match.py"],
+      "pattern": "close_kid_popup",
+      "expect": "present",
+      "src": "reflow:2026-10-07 fd73e46",
+      "enabled": true
+    },
+    {
+      "id": "invite-rule-defined",
+      "desc": "主动邀约硬闸的定义必须存在（铁律『见面必须她主导』不能只写在提示词里）",
+      "type": "grep",
+      "files": ["soul_rules.py"],
+      "pattern": "def\\s+invite_hit\\s*\\(",
+      "expect": "present",
+      "src": "reflow:2026-10-07 a08d23c。⚠️ 首版规则我写错了（写成 _invite_hit + 指向 soul_daemon.py），是 agentM 实测跑出来才发现 —— 定义在 soul_rules.py:226",
+      "enabled": true
+    },
+    {
+      "id": "invite-rule-called",
+      "desc": "邀约硬闸必须**真的被发送链路调用**（定义了但没人调 = 白定义）",
+      "type": "grep",
+      "files": ["soul_daemon.py"],
+      "pattern": "_R\\.invite_hit\\s*\\(",
+      "expect": "present",
+      "src": "reflow:2026-10-07 a08d23c。调用点 soul_daemon.py:985",
+      "enabled": true
+    }
+  ]
+}
