@@ -32,6 +32,16 @@ switch_state.json
 soul_notes.*.json
 .code_watch_state.json
 
+# ---- 凭据兜底（2026-10-07 二次整改）----
+# 起因：newhost 主机密码明文写在 3 个已跟踪文件里，随公开仓库一起泄露。
+# 已从文件中清除，脚本改走环境变量（NEWHOST_PASS）。以下为防再次误提交的兜底规则。
+.env
+*.env
+newhost_secrets*
+remote_hub_secrets*
+*_creds.txt
+*_credentials*
+
 # ---- 调试产物目录（2026-10-06 仓库卫生）----
 /_probe/
 /_trash_*/

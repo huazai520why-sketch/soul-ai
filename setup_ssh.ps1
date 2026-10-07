@@ -22,9 +22,9 @@ try { Start-Transcript -Path $log -Force -ErrorAction Stop } catch { Write-Outpu
 try {
 
 # ---- tunables ----
-# Reuse the EXISTING local account "JIANG" (password 123456, set during reinstall).
+# Reuse the EXISTING local account "JIANG" (password set during OS install; 不在此记录).
 # We do NOT create a new user and do NOT reset the password here, so the
-# Windows password-complexity policy (which would reject "123456") never blocks us.
+# Windows password-complexity policy (which would reject a weak 6-digit password) never blocks us.
 $user = "JIANG"
 # Router (iStoreOS) already reserves 192.168.10.165 by MAC, so a fresh OS gets it via DHCP.
 # Set to $true ONLY if the host does NOT come up as 192.168.10.165 after reinstall.
@@ -54,7 +54,7 @@ if (-not (Get-LocalUser -Name $user -ErrorAction SilentlyContinue)) {
     exit 1
 }
 try { Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue } catch { }
-Write-Output "    $user -> Administrators (password left as-is: 123456)."
+Write-Output "    $user -> Administrators (password left as-is, 不在此记录)."
 
 Write-Output "[4/6] Installing assistant public key..."
 $pub     = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIKMmhziwLajxE8tJp2u7X/sSf+qUttz5EkHc7LJSwY23 workbuddy-newhost'
